@@ -1,4 +1,4 @@
-
+package com.example;
 /**
  * Defines the public interface for a railway interlocking system.
  * This system manages the movement of trains through a corridor of track sections,
