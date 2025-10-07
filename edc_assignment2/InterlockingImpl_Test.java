@@ -1,4 +1,4 @@
-// NO 'package' DECLARATION - This file is ready for Gradescope.
+
 import org.junit.Before;
 import org.junit.Test;
 import static org.junit.Assert.*;

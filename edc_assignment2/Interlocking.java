@@ -1,4 +1,4 @@
-// NO 'package' DECLARATION - This file is ready for Gradescope.
+
 
 /**
  * Defines the public interface for a railway interlocking system.
