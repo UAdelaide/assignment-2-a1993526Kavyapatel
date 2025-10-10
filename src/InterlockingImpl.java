@@ -1,9 +1,21 @@
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
- * Implements the Interlocking interface to manage a railway network.
- * Final tuned version for Programming Assignment 2 (University of Adelaide).
+ * Implements the Interlocking interface for Programming Assignment 2.
+ * Handles train movement, occupancy, and safe coordination of railway sections.
  */
 public class InterlockingImpl implements Interlocking {
 
@@ -34,19 +46,18 @@ public class InterlockingImpl implements Interlocking {
     @Override
     public void addTrain(String trainName, int entryTrackSection, int destinationTrackSection)
             throws IllegalArgumentException, IllegalStateException {
-
         if (trains.containsKey(trainName))
-            throw new IllegalArgumentException("Duplicate train name: " + trainName);
+            throw new IllegalArgumentException("Train already exists: " + trainName);
 
         if (!validSections.contains(entryTrackSection) || !validSections.contains(destinationTrackSection))
-            throw new IllegalArgumentException("Invalid section numbers.");
+            throw new IllegalArgumentException("Invalid track section.");
 
         if (sectionOccupancy.get(entryTrackSection) != null)
-            throw new IllegalStateException("Entry section occupied.");
+            throw new IllegalStateException("Entry section already occupied.");
 
         List<Integer> path = findPath(entryTrackSection, destinationTrackSection);
         if (path.isEmpty())
-            throw new IllegalArgumentException("No valid path from entry to destination.");
+            throw new IllegalArgumentException("No valid path found.");
 
         Train train = new Train(trainName, destinationTrackSection, path);
         trains.put(trainName, train);
@@ -54,7 +65,7 @@ public class InterlockingImpl implements Interlocking {
         sectionOccupancy.put(entryTrackSection, trainName);
     }
 
-    // ✅ Updated moveTrains() method
+    // ✅ Your provided moveTrains() method
     @Override
     public int moveTrains(String... trainNames) throws IllegalArgumentException {
         Set<String> moving = new HashSet<>(Arrays.asList(trainNames));
@@ -81,7 +92,7 @@ public class InterlockingImpl implements Interlocking {
                 // Exit immediately if on destination
                 if (current == tr.destination) {
                     plan.put(name, -1);
-                    sectionOccupancy.put(current, null); // free instantly
+                    sectionOccupancy.put(current, null); // mark freed
                     changed = true;
                     continue;
                 }
@@ -91,26 +102,30 @@ public class InterlockingImpl implements Interlocking {
 
                 String occ = sectionOccupancy.get(next);
 
-                // Allow reuse if occupant is leaving this tick or already planned to move
-                boolean free = (occ == null) ||
-                               (moving.contains(occ) && plan.containsKey(occ)) ||
-                               (moving.contains(occ) && plan.getOrDefault(occ, -99) == -1);
+                // For passenger line sections (2,6,8,10) require 1-tick delay
+                boolean isPassengerSection = Arrays.asList(2, 6, 8, 10).contains(next);
+
+                boolean free = (occ == null)
+                        || (moving.contains(occ) && plan.containsKey(occ))
+                        || (moving.contains(occ) && plan.getOrDefault(occ, -99) == -1);
+
+                // If it’s a passenger section just vacated, disallow immediate reuse
+                if (isPassengerSection && occ == null && plan.containsValue(next))
+                    free = false;
 
                 if (!free) continue;
 
                 // Avoid two trains targeting same section
                 if (plan.containsValue(next)) continue;
 
-                // --- Junction relaxation ---
-                // Only block if both sides fully occupied and neither moving/clearing
+                // --- Junction rules ---
                 boolean freightBusy = (sectionOccupancy.get(3) != null && !plan.containsKey(sectionOccupancy.get(3))) ||
                                       (sectionOccupancy.get(4) != null && !plan.containsKey(sectionOccupancy.get(4)));
                 boolean passBusy = (sectionOccupancy.get(5) != null && !plan.containsKey(sectionOccupancy.get(5))) ||
                                    (sectionOccupancy.get(6) != null && !plan.containsKey(sectionOccupancy.get(6)));
-
                 if (freightBusy && passBusy) continue;
 
-                // Cross mutual exclusion – relax if other line is moving
+                // Cross mutual exclusion
                 if ((current == 3 && next == 4) || (current == 4 && next == 3)) {
                     if ((sectionOccupancy.get(5) != null && !plan.containsKey(sectionOccupancy.get(5))) ||
                         (sectionOccupancy.get(6) != null && !plan.containsKey(sectionOccupancy.get(6))))
@@ -122,17 +137,12 @@ public class InterlockingImpl implements Interlocking {
                         continue;
                 }
 
-                // Allow reusing section 10 or exits if being vacated this turn
-                if ((next == 10 || next == 8 || next == 9) && (occ == null)) {
-                    changed = true;
-                }
-
                 plan.put(name, next);
                 changed = true;
             }
         } while (changed);
 
-        // --- Execute all planned moves ---
+        // --- Execute planned moves ---
         int moved = 0;
         for (String n : order) {
             if (!plan.containsKey(n)) continue;
@@ -153,35 +163,35 @@ public class InterlockingImpl implements Interlocking {
     @Override
     public String getSection(int trackSection) throws IllegalArgumentException {
         if (!validSections.contains(trackSection))
-            throw new IllegalArgumentException("Invalid section: " + trackSection);
+            throw new IllegalArgumentException("Invalid section number: " + trackSection);
         return sectionOccupancy.get(trackSection);
     }
 
     @Override
     public int getTrain(String trainName) throws IllegalArgumentException {
         if (!trains.containsKey(trainName))
-            throw new IllegalArgumentException("Unknown train: " + trainName);
+            throw new IllegalArgumentException("Train does not exist: " + trainName);
         return trainLocations.getOrDefault(trainName, -1);
     }
 
-    // Pathfinding logic
+    // 🔹 Pathfinding logic
     private List<Integer> findPath(int start, int end) {
         Map<Integer, List<Integer>> graph = buildGraph();
-        Queue<List<Integer>> q = new LinkedList<>();
-        q.add(Collections.singletonList(start));
+        Queue<List<Integer>> queue = new LinkedList<>();
+        queue.add(Collections.singletonList(start));
         Set<Integer> visited = new HashSet<>();
         visited.add(start);
 
-        while (!q.isEmpty()) {
-            List<Integer> path = q.poll();
+        while (!queue.isEmpty()) {
+            List<Integer> path = queue.poll();
             int last = path.get(path.size() - 1);
             if (last == end) return path;
-            for (int n : graph.getOrDefault(last, List.of())) {
-                if (!visited.contains(n)) {
-                    visited.add(n);
-                    List<Integer> np = new ArrayList<>(path);
-                    np.add(n);
-                    q.add(np);
+            for (int next : graph.getOrDefault(last, Collections.emptyList())) {
+                if (!visited.contains(next)) {
+                    visited.add(next);
+                    List<Integer> newPath = new ArrayList<>(path);
+                    newPath.add(next);
+                    queue.add(newPath);
                 }
             }
         }
@@ -190,7 +200,7 @@ public class InterlockingImpl implements Interlocking {
 
     private Map<Integer, List<Integer>> buildGraph() {
         Map<Integer, List<Integer>> g = new HashMap<>();
-        // Passenger
+        // Passenger network
         g.computeIfAbsent(1, k -> new ArrayList<>()).add(5);
         g.computeIfAbsent(5, k -> new ArrayList<>()).addAll(Arrays.asList(1, 2, 6));
         g.computeIfAbsent(2, k -> new ArrayList<>()).add(5);
@@ -198,7 +208,7 @@ public class InterlockingImpl implements Interlocking {
         g.computeIfAbsent(10, k -> new ArrayList<>()).addAll(Arrays.asList(6, 8, 9));
         g.computeIfAbsent(8, k -> new ArrayList<>()).add(10);
         g.computeIfAbsent(9, k -> new ArrayList<>()).add(10);
-        // Freight
+        // Freight network
         g.computeIfAbsent(3, k -> new ArrayList<>()).addAll(Arrays.asList(4, 7));
         g.computeIfAbsent(4, k -> new ArrayList<>()).add(3);
         g.computeIfAbsent(7, k -> new ArrayList<>()).addAll(Arrays.asList(3, 11));
@@ -206,18 +216,18 @@ public class InterlockingImpl implements Interlocking {
         return g;
     }
 
-    private int getNextSectionForTrain(String name) {
-        Train t = trains.get(name);
-        int current = trainLocations.get(name);
+    private int getNextSectionForTrain(String trainName) {
+        Train t = trains.get(trainName);
+        int current = trainLocations.get(trainName);
         int idx = t.path.indexOf(current);
         if (idx != -1 && idx < t.path.size() - 1)
             return t.path.get(idx + 1);
         return -1;
     }
 
-    private boolean isFreightTrain(String n) {
-        Train t = trains.get(n);
-        if (t.path.isEmpty()) return false;
+    private boolean isFreightTrain(String name) {
+        Train t = trains.get(name);
+        if (t == null || t.path.isEmpty()) return false;
         int first = t.path.get(0);
         return Arrays.asList(3, 4, 7, 11).contains(first);
     }
