@@ -3,8 +3,7 @@ import java.util.stream.Collectors;
 
 /**
  * Implements the Interlocking interface to manage a railway network.
- * Final tuned version that resolves both over-blocking and collision edge cases.
- * Should pass all autograder transition and junction tests.
+ * Final Adelaide-tuned version with correct junction and chain movement logic.
  */
 public class InterlockingImpl implements Interlocking {
 
@@ -35,207 +34,178 @@ public class InterlockingImpl implements Interlocking {
     @Override
     public void addTrain(String trainName, int entryTrackSection, int destinationTrackSection)
             throws IllegalArgumentException, IllegalStateException {
-        if (trains.containsKey(trainName)) {
-            throw new IllegalArgumentException("Train name '" + trainName + "' is already in use.");
-        }
-        if (!validSections.contains(entryTrackSection) || !validSections.contains(destinationTrackSection)) {
-            throw new IllegalArgumentException("Invalid entry or destination track section.");
-        }
-        if (sectionOccupancy.get(entryTrackSection) != null) {
-            throw new IllegalStateException("Entry track section " + entryTrackSection + " is already occupied.");
-        }
+
+        if (trains.containsKey(trainName))
+            throw new IllegalArgumentException("Duplicate train name: " + trainName);
+
+        if (!validSections.contains(entryTrackSection) || !validSections.contains(destinationTrackSection))
+            throw new IllegalArgumentException("Invalid section numbers.");
+
+        if (sectionOccupancy.get(entryTrackSection) != null)
+            throw new IllegalStateException("Entry section occupied.");
 
         List<Integer> path = findPath(entryTrackSection, destinationTrackSection);
-        if (path.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "No valid path from entry " + entryTrackSection + " to destination " + destinationTrackSection);
-        }
+        if (path.isEmpty())
+            throw new IllegalArgumentException("No valid path from entry to destination.");
 
-        Train newTrain = new Train(trainName, destinationTrackSection, path);
-        trains.put(trainName, newTrain);
+        Train train = new Train(trainName, destinationTrackSection, path);
+        trains.put(trainName, train);
         trainLocations.put(trainName, entryTrackSection);
         sectionOccupancy.put(entryTrackSection, trainName);
     }
 
+    // ✅ Updated moveTrains() – final tuned version
     @Override
     public int moveTrains(String... trainNames) throws IllegalArgumentException {
-        Set<String> trainsToMove = new HashSet<>(Arrays.asList(trainNames));
-        for (String name : trainsToMove) {
-            if (!trains.containsKey(name)) {
-                throw new IllegalArgumentException("Train '" + name + "' does not exist.");
-            }
-        }
+        Set<String> moving = new HashSet<>(Arrays.asList(trainNames));
+        for (String n : moving)
+            if (!trains.containsKey(n))
+                throw new IllegalArgumentException("Train '" + n + "' does not exist.");
 
-        Map<String, Integer> plannedMoves = new HashMap<>();
-
-        // Sort trains: passenger first, then freight, then alphabetical
-        List<String> sortedTrainNames = trainsToMove.stream()
+        // Passenger first, then Freight, then alphabetical order
+        List<String> order = moving.stream()
                 .filter(trainLocations::containsKey)
-                .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(name -> name))
+                .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(n -> n))
                 .collect(Collectors.toList());
 
-        // --- Planning phase ---
-        int lastPlanned = -1;
-        while (plannedMoves.size() > lastPlanned) {
-            lastPlanned = plannedMoves.size();
+        Map<String, Integer> plan = new HashMap<>();
+        boolean changed;
 
-            for (String trainName : sortedTrainNames) {
-                if (plannedMoves.containsKey(trainName)) continue;
+        do {
+            changed = false;
+            for (String name : order) {
+                if (plan.containsKey(name)) continue;
+                int current = trainLocations.get(name);
+                Train tr = trains.get(name);
 
-                int current = trainLocations.get(trainName);
-                Train t = trains.get(trainName);
-
-                if (current == t.destination) {
-                    plannedMoves.put(trainName, -1); // Exit next tick
+                // Exit if at destination
+                if (current == tr.destination) {
+                    plan.put(name, -1);
+                    changed = true;
                     continue;
                 }
 
-                int next = getNextSectionForTrain(trainName);
+                int next = getNextSectionForTrain(name);
                 if (next == -1) continue;
 
-                String occupant = sectionOccupancy.get(next);
-                boolean canMove = (occupant == null)
-                        || (trainsToMove.contains(occupant) && plannedMoves.containsKey(occupant));
-                if (!canMove) continue;
+                String occ = sectionOccupancy.get(next);
+                boolean free = (occ == null) || (moving.contains(occ) && plan.containsKey(occ));
+                if (!free) continue;
 
-                // avoid multiple trains planning same target
-                if (plannedMoves.containsValue(next)) continue;
+                if (plan.containsValue(next)) continue;
 
-                // Shared junction core (3–4–5–6)
-                boolean freightAt34 = sectionOccupancy.get(3) != null || sectionOccupancy.get(4) != null;
-                boolean passengerAt56 = sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null;
+                // --- Junction handling ---
+                boolean freightBusy = sectionOccupancy.get(3) != null || sectionOccupancy.get(4) != null;
+                boolean passBusy = sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null;
+                boolean freightClearing = plan.containsValue(3) || plan.containsValue(4);
+                boolean passClearing = plan.containsValue(5) || plan.containsValue(6);
 
-                // block only if both networks trying to use same junction
-                if (freightAt34 && passengerAt56) continue;
+                if (freightBusy && passBusy && !freightClearing && !passClearing) continue;
 
-                // micro-rules
-                // (3↔4) needs 5 & 6 clear
+                // Cross check for conflicts
                 if ((current == 3 && next == 4) || (current == 4 && next == 3)) {
-                    if (sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null) continue;
+                    if ((sectionOccupancy.get(5) != null && !plan.containsKey(sectionOccupancy.get(5))) ||
+                        (sectionOccupancy.get(6) != null && !plan.containsKey(sectionOccupancy.get(6))))
+                        continue;
                 }
-
-                // (5↔6) needs 3 & 4 clear
                 if ((current == 5 && next == 6) || (current == 6 && next == 5)) {
-                    if (sectionOccupancy.get(3) != null || sectionOccupancy.get(4) != null) continue;
+                    if ((sectionOccupancy.get(3) != null && !plan.containsKey(sectionOccupancy.get(3))) ||
+                        (sectionOccupancy.get(4) != null && !plan.containsKey(sectionOccupancy.get(4))))
+                        continue;
                 }
 
-                // prevent same-tick dual entry to 6/10 overlap
-                if ((current == 10 && next == 6) || (current == 6 && next == 10)) {
-                    if (sectionOccupancy.get(5) != null && sectionOccupancy.get(10) != null) continue;
-                }
-
-                // freight 7–11 overlap protection
-                if ((current == 7 && next == 3) || (current == 11 && next == 7)) {
-                    if (sectionOccupancy.get(3) != null) continue;
-                }
-
-                plannedMoves.put(trainName, next);
+                plan.put(name, next);
+                changed = true;
             }
-        }
+        } while (changed);
 
-        // --- Execution phase ---
+        // --- Execute ---
         int moved = 0;
-        for (String trainName : sortedTrainNames) {
-            if (plannedMoves.containsKey(trainName)) {
-                int newSec = plannedMoves.get(trainName);
-                if (!trainLocations.containsKey(trainName)) continue;
-                int old = trainLocations.get(trainName);
-
-                sectionOccupancy.put(old, null);
-                if (newSec == -1) {
-                    trainLocations.remove(trainName);
-                } else {
-                    sectionOccupancy.put(newSec, trainName);
-                    trainLocations.put(trainName, newSec);
-                }
-                moved++;
+        for (String n : order) {
+            if (!plan.containsKey(n)) continue;
+            int dest = plan.get(n);
+            int old = trainLocations.get(n);
+            sectionOccupancy.put(old, null);
+            if (dest == -1)
+                trainLocations.remove(n);
+            else {
+                sectionOccupancy.put(dest, n);
+                trainLocations.put(n, dest);
             }
+            moved++;
         }
         return moved;
     }
 
     @Override
     public String getSection(int trackSection) throws IllegalArgumentException {
-        if (!validSections.contains(trackSection)) {
-            throw new IllegalArgumentException("Track section " + trackSection + " does not exist.");
-        }
+        if (!validSections.contains(trackSection))
+            throw new IllegalArgumentException("Invalid section: " + trackSection);
         return sectionOccupancy.get(trackSection);
     }
 
     @Override
     public int getTrain(String trainName) throws IllegalArgumentException {
-        if (!trains.containsKey(trainName)) {
-            throw new IllegalArgumentException("Train '" + trainName + "' does not exist.");
-        }
+        if (!trains.containsKey(trainName))
+            throw new IllegalArgumentException("Unknown train: " + trainName);
         return trainLocations.getOrDefault(trainName, -1);
     }
 
+    // 🔍 Graph pathfinding logic
     private List<Integer> findPath(int start, int end) {
-        Map<Integer, List<Integer>> fullGraph = buildFullGraph();
-        if (!fullGraph.containsKey(start)) return Collections.emptyList();
-        Queue<List<Integer>> queue = new LinkedList<>();
-        queue.add(Collections.singletonList(start));
+        Map<Integer, List<Integer>> graph = buildGraph();
+        Queue<List<Integer>> q = new LinkedList<>();
+        q.add(Collections.singletonList(start));
         Set<Integer> visited = new HashSet<>();
         visited.add(start);
-        while (!queue.isEmpty()) {
-            List<Integer> currentPath = queue.poll();
-            int lastNode = currentPath.get(currentPath.size() - 1);
-            if (lastNode == end) return currentPath;
-            for (int neighbor : fullGraph.getOrDefault(lastNode, Collections.emptyList())) {
-                if (!visited.contains(neighbor)) {
-                    visited.add(neighbor);
-                    List<Integer> newPath = new ArrayList<>(currentPath);
-                    newPath.add(neighbor);
-                    queue.add(newPath);
+
+        while (!q.isEmpty()) {
+            List<Integer> path = q.poll();
+            int last = path.get(path.size() - 1);
+            if (last == end) return path;
+            for (int n : graph.getOrDefault(last, List.of())) {
+                if (!visited.contains(n)) {
+                    visited.add(n);
+                    List<Integer> np = new ArrayList<>(path);
+                    np.add(n);
+                    q.add(np);
                 }
             }
         }
-        return Collections.emptyList();
+        return List.of();
     }
 
-    private Map<Integer, List<Integer>> buildFullGraph() {
-        Map<Integer, List<Integer>> graph = new HashMap<>();
-        // Passenger line
-        graph.computeIfAbsent(1, k -> new ArrayList<>()).add(5);
-        graph.computeIfAbsent(5, k -> new ArrayList<>()).addAll(Arrays.asList(1, 2, 6));
-        graph.computeIfAbsent(2, k -> new ArrayList<>()).add(5);
-        graph.computeIfAbsent(6, k -> new ArrayList<>()).addAll(Arrays.asList(5, 10));
-        graph.computeIfAbsent(10, k -> new ArrayList<>()).addAll(Arrays.asList(6, 8, 9));
-        graph.computeIfAbsent(8, k -> new ArrayList<>()).add(10);
-        graph.computeIfAbsent(9, k -> new ArrayList<>()).add(10);
-        // Freight line
-        graph.computeIfAbsent(3, k -> new ArrayList<>()).addAll(Arrays.asList(4, 7));
-        graph.computeIfAbsent(4, k -> new ArrayList<>()).add(3);
-        graph.computeIfAbsent(7, k -> new ArrayList<>()).addAll(Arrays.asList(3, 11));
-        graph.computeIfAbsent(11, k -> new ArrayList<>()).add(7);
-        return graph;
+    private Map<Integer, List<Integer>> buildGraph() {
+        Map<Integer, List<Integer>> g = new HashMap<>();
+        // Passenger
+        g.computeIfAbsent(1, k -> new ArrayList<>()).add(5);
+        g.computeIfAbsent(5, k -> new ArrayList<>()).addAll(Arrays.asList(1, 2, 6));
+        g.computeIfAbsent(2, k -> new ArrayList<>()).add(5);
+        g.computeIfAbsent(6, k -> new ArrayList<>()).addAll(Arrays.asList(5, 10));
+        g.computeIfAbsent(10, k -> new ArrayList<>()).addAll(Arrays.asList(6, 8, 9));
+        g.computeIfAbsent(8, k -> new ArrayList<>()).add(10);
+        g.computeIfAbsent(9, k -> new ArrayList<>()).add(10);
+        // Freight
+        g.computeIfAbsent(3, k -> new ArrayList<>()).addAll(Arrays.asList(4, 7));
+        g.computeIfAbsent(4, k -> new ArrayList<>()).add(3);
+        g.computeIfAbsent(7, k -> new ArrayList<>()).addAll(Arrays.asList(3, 11));
+        g.computeIfAbsent(11, k -> new ArrayList<>()).add(7);
+        return g;
     }
 
-    private int getNextSectionForTrain(String trainName) {
-        if (!trainLocations.containsKey(trainName)) return -1;
-        Train train = trains.get(trainName);
-        int current = trainLocations.get(trainName);
-        List<Integer> path = train.path;
-        int idx = path.indexOf(current);
-        if (idx != -1 && idx < path.size() - 1) {
-            return path.get(idx + 1);
-        }
+    private int getNextSectionForTrain(String name) {
+        Train t = trains.get(name);
+        int current = trainLocations.get(name);
+        int idx = t.path.indexOf(current);
+        if (idx != -1 && idx < t.path.size() - 1)
+            return t.path.get(idx + 1);
         return -1;
     }
 
-    private boolean isPassengerTrain(String trainName) {
-        if (!trains.containsKey(trainName)) return false;
-        Train train = trains.get(trainName);
-        if (train.path.isEmpty()) return false;
-        int first = train.path.get(0);
-        return Arrays.asList(1, 8, 9, 10, 2, 5, 6).contains(first);
-    }
-
-    private boolean isFreightTrain(String trainName) {
-        if (!trains.containsKey(trainName)) return false;
-        Train train = trains.get(trainName);
-        if (train.path.isEmpty()) return false;
-        int first = train.path.get(0);
-        return Arrays.asList(3, 11, 4, 7).contains(first);
+    private boolean isFreightTrain(String n) {
+        Train t = trains.get(n);
+        if (t.path.isEmpty()) return false;
+        int first = t.path.get(0);
+        return Arrays.asList(3, 4, 7, 11).contains(first);
     }
 }
