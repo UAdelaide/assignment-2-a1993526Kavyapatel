@@ -1,4 +1,4 @@
-// NO 'package' DECLARATION - This file is ready for Gradescope.
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -127,6 +127,7 @@ public class InterlockingImpl implements Interlocking {
 
         // --- Execution Phase ---
         int movedCount = 0;
+        // Execute moves in the same deterministic order to be safe.
         for (String trainName : sortedTrainNames) {
             if (plannedMoves.containsKey(trainName)) {
                 int newSection = plannedMoves.get(trainName);
@@ -191,6 +192,7 @@ public class InterlockingImpl implements Interlocking {
 
     private Map<Integer, List<Integer>> buildFullGraph() {
         Map<Integer, List<Integer>> graph = new HashMap<>();
+        // Passenger Line (bi-directional for pathfinding)
         graph.computeIfAbsent(1, k -> new ArrayList<>()).add(5);
         graph.computeIfAbsent(5, k -> new ArrayList<>()).addAll(Arrays.asList(1, 2, 6));
         graph.computeIfAbsent(2, k -> new ArrayList<>()).add(5);
@@ -198,6 +200,7 @@ public class InterlockingImpl implements Interlocking {
         graph.computeIfAbsent(10, k -> new ArrayList<>()).addAll(Arrays.asList(6, 8, 9));
         graph.computeIfAbsent(8, k -> new ArrayList<>()).add(10);
         graph.computeIfAbsent(9, k -> new ArrayList<>()).add(10);
+        // Freight Line (bi-directional for pathfinding)
         graph.computeIfAbsent(3, k -> new ArrayList<>()).addAll(Arrays.asList(4, 7));
         graph.computeIfAbsent(4, k -> new ArrayList<>()).add(3);
         graph.computeIfAbsent(7, k -> new ArrayList<>()).addAll(Arrays.asList(3, 11));
@@ -221,16 +224,16 @@ public class InterlockingImpl implements Interlocking {
         if (!trains.containsKey(trainName)) return false;
         Train train = trains.get(trainName);
         if (train.path.isEmpty()) return false;
-        int startNode = train.path.get(0);
-        return Arrays.asList(1, 8, 9, 10, 2, 5, 6).contains(startNode);
+        int firstSection = train.path.get(0);
+        return Arrays.asList(1, 8, 9, 10, 2, 5, 6).contains(firstSection);
     }
 
     private boolean isFreightTrain(String trainName) {
         if (!trains.containsKey(trainName)) return false;
         Train train = trains.get(trainName);
         if (train.path.isEmpty()) return false;
-        int startNode = train.path.get(0);
-        return Arrays.asList(3, 11, 4, 7).contains(startNode);
+        int firstSection = train.path.get(0);
+        return Arrays.asList(3, 11, 4, 7).contains(firstSection);
     }
 }
 
