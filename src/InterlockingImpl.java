@@ -54,7 +54,7 @@ public class InterlockingImpl implements Interlocking {
         sectionOccupancy.put(entryTrackSection, trainName);
     }
 
-    // ✅ Final moveTrains() with chain reaction and junction fairness logic
+    // ✅ Integrated moveTrains() method
     @Override
     public int moveTrains(String... trainNames) throws IllegalArgumentException {
         Set<String> moving = new HashSet<>(Arrays.asList(trainNames));
@@ -78,9 +78,11 @@ public class InterlockingImpl implements Interlocking {
                 int current = trainLocations.get(name);
                 Train tr = trains.get(name);
 
-                // Exit if at destination
+                // Exit if already at destination
                 if (current == tr.destination) {
                     plan.put(name, -1);
+                    // mark freed section immediately
+                    sectionOccupancy.put(current, null);
                     changed = true;
                     continue;
                 }
@@ -92,17 +94,18 @@ public class InterlockingImpl implements Interlocking {
                 boolean free = (occ == null) || (moving.contains(occ) && plan.containsKey(occ));
                 if (!free) continue;
 
-                // Avoid two trains planning same destination
+                // prevent two trains going to same target
                 if (plan.containsValue(next)) continue;
 
-                // --- Junction logic ---
+                // --- Junction coordination ---
                 boolean freightBusy = sectionOccupancy.get(3) != null || sectionOccupancy.get(4) != null;
                 boolean passBusy = sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null;
                 boolean freightClearing = plan.containsValue(3) || plan.containsValue(4);
                 boolean passClearing = plan.containsValue(5) || plan.containsValue(6);
+
                 if (freightBusy && passBusy && !freightClearing && !passClearing) continue;
 
-                // Block cross interference
+                // Crossline mutual exclusion
                 if ((current == 3 && next == 4) || (current == 4 && next == 3)) {
                     if ((sectionOccupancy.get(5) != null && !plan.containsKey(sectionOccupancy.get(5))) ||
                         (sectionOccupancy.get(6) != null && !plan.containsKey(sectionOccupancy.get(6))))
@@ -114,21 +117,18 @@ public class InterlockingImpl implements Interlocking {
                         continue;
                 }
 
+                // 🚦 NEW: reuse of just-freed section 10 (passenger hub)
+                if ((next == 10) && sectionOccupancy.get(10) == null) {
+                    // allow if last occupant planned to exit
+                    changed = true;
+                }
+
                 plan.put(name, next);
                 changed = true;
             }
-
-            // 🚦 Chain reaction: release sections as soon as trains plan to exit
-            for (String n : new ArrayList<>(plan.keySet())) {
-                if (plan.get(n) == -1) {
-                    int released = trainLocations.get(n);
-                    sectionOccupancy.put(released, null);
-                }
-            }
-
         } while (changed);
 
-        // --- Execute the planned moves ---
+        // --- Execute planned moves ---
         int moved = 0;
         for (String n : order) {
             if (!plan.containsKey(n)) continue;
