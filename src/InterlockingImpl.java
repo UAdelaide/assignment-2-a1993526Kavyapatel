@@ -3,7 +3,7 @@ import java.util.stream.Collectors;
 
 /**
  * Implements the Interlocking interface to manage a railway network.
- * Final Adelaide-tuned version with correct junction and chain movement logic.
+ * Final tuned version for Programming Assignment 2 (University of Adelaide).
  */
 public class InterlockingImpl implements Interlocking {
 
@@ -54,7 +54,7 @@ public class InterlockingImpl implements Interlocking {
         sectionOccupancy.put(entryTrackSection, trainName);
     }
 
-    // ✅ Updated moveTrains() – final tuned version
+    // ✅ Final moveTrains() with chain reaction and junction fairness logic
     @Override
     public int moveTrains(String... trainNames) throws IllegalArgumentException {
         Set<String> moving = new HashSet<>(Arrays.asList(trainNames));
@@ -62,7 +62,7 @@ public class InterlockingImpl implements Interlocking {
             if (!trains.containsKey(n))
                 throw new IllegalArgumentException("Train '" + n + "' does not exist.");
 
-        // Passenger first, then Freight, then alphabetical order
+        // Passenger first, then freight, then alphabetical
         List<String> order = moving.stream()
                 .filter(trainLocations::containsKey)
                 .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(n -> n))
@@ -92,17 +92,17 @@ public class InterlockingImpl implements Interlocking {
                 boolean free = (occ == null) || (moving.contains(occ) && plan.containsKey(occ));
                 if (!free) continue;
 
+                // Avoid two trains planning same destination
                 if (plan.containsValue(next)) continue;
 
-                // --- Junction handling ---
+                // --- Junction logic ---
                 boolean freightBusy = sectionOccupancy.get(3) != null || sectionOccupancy.get(4) != null;
                 boolean passBusy = sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null;
                 boolean freightClearing = plan.containsValue(3) || plan.containsValue(4);
                 boolean passClearing = plan.containsValue(5) || plan.containsValue(6);
-
                 if (freightBusy && passBusy && !freightClearing && !passClearing) continue;
 
-                // Cross check for conflicts
+                // Block cross interference
                 if ((current == 3 && next == 4) || (current == 4 && next == 3)) {
                     if ((sectionOccupancy.get(5) != null && !plan.containsKey(sectionOccupancy.get(5))) ||
                         (sectionOccupancy.get(6) != null && !plan.containsKey(sectionOccupancy.get(6))))
@@ -117,9 +117,18 @@ public class InterlockingImpl implements Interlocking {
                 plan.put(name, next);
                 changed = true;
             }
+
+            // 🚦 Chain reaction: release sections as soon as trains plan to exit
+            for (String n : new ArrayList<>(plan.keySet())) {
+                if (plan.get(n) == -1) {
+                    int released = trainLocations.get(n);
+                    sectionOccupancy.put(released, null);
+                }
+            }
+
         } while (changed);
 
-        // --- Execute ---
+        // --- Execute the planned moves ---
         int moved = 0;
         for (String n : order) {
             if (!plan.containsKey(n)) continue;
