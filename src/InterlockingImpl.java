@@ -65,7 +65,7 @@ public class InterlockingImpl implements Interlocking {
         sectionOccupancy.put(entryTrackSection, trainName);
     }
 
-    // ✅ Final moveTrains() with cooldown delay fix
+    // ✅ Final moveTrains() with extended cooldown and junction blocking
     @Override
     public int moveTrains(String... trainNames) throws IllegalArgumentException {
         Set<String> moving = new HashSet<>(Arrays.asList(trainNames));
@@ -73,14 +73,13 @@ public class InterlockingImpl implements Interlocking {
             if (!trains.containsKey(n))
                 throw new IllegalArgumentException("Train '" + n + "' does not exist.");
 
-        // Passenger first, then freight, then alphabetical for deterministic grading
         List<String> order = moving.stream()
                 .filter(trainLocations::containsKey)
                 .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(n -> n))
                 .collect(Collectors.toList());
 
         Map<String, Integer> plan = new HashMap<>();
-        Set<Integer> cooldown = new HashSet<>(); // passenger sections locked this tick
+        Set<Integer> cooldown = new HashSet<>();
         boolean changed;
 
         do {
@@ -90,11 +89,10 @@ public class InterlockingImpl implements Interlocking {
                 int current = trainLocations.get(name);
                 Train tr = trains.get(name);
 
-                // Exit immediately if on destination
                 if (current == tr.destination) {
                     plan.put(name, -1);
                     sectionOccupancy.put(current, null);
-                    if (Arrays.asList(2, 6, 8, 10).contains(current)) cooldown.add(current);
+                    addCooldown(current, cooldown);   // 🔹 neighbour lock
                     changed = true;
                     continue;
                 }
@@ -108,14 +106,9 @@ public class InterlockingImpl implements Interlocking {
                         || (moving.contains(occ) && plan.containsKey(occ))
                         || (moving.contains(occ) && plan.getOrDefault(occ, -99) == -1);
 
-                // Passenger section cooldown: block reuse for one extra tick
-                if (Arrays.asList(2, 6, 8, 10).contains(next) && cooldown.contains(next))
-                    free = false;
+                if (cooldown.contains(next)) free = false;   // 🔹 new blocking rule
 
-                if (!free) continue;
-
-                // Avoid two trains targeting same section
-                if (plan.containsValue(next)) continue;
+                if (!free || plan.containsValue(next)) continue;
 
                 // --- Junction rules ---
                 boolean freightBusy = (sectionOccupancy.get(3) != null && !plan.containsKey(sectionOccupancy.get(3))) ||
@@ -124,7 +117,6 @@ public class InterlockingImpl implements Interlocking {
                                    (sectionOccupancy.get(6) != null && !plan.containsKey(sectionOccupancy.get(6)));
                 if (freightBusy && passBusy) continue;
 
-                // Cross mutual exclusion
                 if ((current == 3 && next == 4) || (current == 4 && next == 3)) {
                     if ((sectionOccupancy.get(5) != null && !plan.containsKey(sectionOccupancy.get(5))) ||
                         (sectionOccupancy.get(6) != null && !plan.containsKey(sectionOccupancy.get(6))))
@@ -141,23 +133,34 @@ public class InterlockingImpl implements Interlocking {
             }
         } while (changed);
 
-        // --- Execute planned moves ---
         int moved = 0;
         for (String n : order) {
             if (!plan.containsKey(n)) continue;
             int dest = plan.get(n);
             int old = trainLocations.get(n);
             sectionOccupancy.put(old, null);
-            if (Arrays.asList(2, 6, 8, 10).contains(old)) cooldown.add(old);
-            if (dest == -1) {
-                trainLocations.remove(n);
-            } else {
+            addCooldown(old, cooldown);   // 🔹 apply cooldown on exit
+            if (dest == -1) trainLocations.remove(n);
+            else {
                 sectionOccupancy.put(dest, n);
                 trainLocations.put(n, dest);
             }
             moved++;
         }
         return moved;
+    }
+
+    /**
+     * Adds cooldown for a section and its neighbour if it's part of a junction.
+     */
+    private void addCooldown(int section, Set<Integer> cooldown) {
+        cooldown.add(section);
+        switch (section) {
+            case 2 -> cooldown.add(5);
+            case 6 -> cooldown.add(5);
+            case 5 -> cooldown.addAll(Arrays.asList(2, 6));
+            case 3, 4 -> cooldown.addAll(Arrays.asList(5, 6));
+        }
     }
 
     @Override
