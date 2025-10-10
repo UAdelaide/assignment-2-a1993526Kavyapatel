@@ -1,4 +1,3 @@
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -231,4 +230,3 @@ public class InterlockingImpl implements Interlocking {
         return Arrays.asList(3, 11, 4, 7).contains(startNode);
     }
 }
-
