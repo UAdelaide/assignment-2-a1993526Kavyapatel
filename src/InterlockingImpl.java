@@ -65,7 +65,7 @@ public class InterlockingImpl implements Interlocking {
         sectionOccupancy.put(entryTrackSection, trainName);
     }
 
-    // ✅ Your provided moveTrains() method
+    // ✅ Final moveTrains() with cooldown delay fix
     @Override
     public int moveTrains(String... trainNames) throws IllegalArgumentException {
         Set<String> moving = new HashSet<>(Arrays.asList(trainNames));
@@ -80,6 +80,7 @@ public class InterlockingImpl implements Interlocking {
                 .collect(Collectors.toList());
 
         Map<String, Integer> plan = new HashMap<>();
+        Set<Integer> cooldown = new HashSet<>(); // passenger sections locked this tick
         boolean changed;
 
         do {
@@ -92,7 +93,8 @@ public class InterlockingImpl implements Interlocking {
                 // Exit immediately if on destination
                 if (current == tr.destination) {
                     plan.put(name, -1);
-                    sectionOccupancy.put(current, null); // mark freed
+                    sectionOccupancy.put(current, null);
+                    if (Arrays.asList(2, 6, 8, 10).contains(current)) cooldown.add(current);
                     changed = true;
                     continue;
                 }
@@ -102,15 +104,12 @@ public class InterlockingImpl implements Interlocking {
 
                 String occ = sectionOccupancy.get(next);
 
-                // For passenger line sections (2,6,8,10) require 1-tick delay
-                boolean isPassengerSection = Arrays.asList(2, 6, 8, 10).contains(next);
-
                 boolean free = (occ == null)
                         || (moving.contains(occ) && plan.containsKey(occ))
                         || (moving.contains(occ) && plan.getOrDefault(occ, -99) == -1);
 
-                // If it’s a passenger section just vacated, disallow immediate reuse
-                if (isPassengerSection && occ == null && plan.containsValue(next))
+                // Passenger section cooldown: block reuse for one extra tick
+                if (Arrays.asList(2, 6, 8, 10).contains(next) && cooldown.contains(next))
                     free = false;
 
                 if (!free) continue;
@@ -149,6 +148,7 @@ public class InterlockingImpl implements Interlocking {
             int dest = plan.get(n);
             int old = trainLocations.get(n);
             sectionOccupancy.put(old, null);
+            if (Arrays.asList(2, 6, 8, 10).contains(old)) cooldown.add(old);
             if (dest == -1) {
                 trainLocations.remove(n);
             } else {
