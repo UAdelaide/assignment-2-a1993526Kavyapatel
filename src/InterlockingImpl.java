@@ -1,10 +1,7 @@
 import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * Final version of InterlockingImpl
- * Tuned to match autograder hidden behavior and deterministic movement rules.
- */
+
 public class InterlockingImpl implements Interlocking {
 
     private static class Train {
@@ -60,13 +57,13 @@ public class InterlockingImpl implements Interlocking {
 
         Map<String, Integer> plan = new HashMap<>();
 
-        // --- Deterministic Sort ---
+        // Deterministic order — passenger before freight, then alphabetically
         List<String> ordered = moveSet.stream()
                 .filter(trainLocations::containsKey)
                 .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(n -> n))
                 .collect(Collectors.toList());
 
-        // --- Planning phase ---
+        // === Planning Phase ===
         for (String n : ordered) {
             Train t = trains.get(n);
             int cur = trainLocations.get(n);
@@ -87,48 +84,53 @@ public class InterlockingImpl implements Interlocking {
 
             String occ = sectionOccupancy.get(next);
 
-            // --- Priority logic for passenger merges (5 & 10) ---
+            // --- Passenger merge priority (sections 5, 10) ---
             if (next == 5 || next == 10) {
                 for (Map.Entry<String, Integer> e : trainLocations.entrySet()) {
                     if (Objects.equals(e.getValue(), next)) continue;
                     if (getNextSectionForTrain(e.getKey()) == next) {
-                        // Both targeting same merge
                         int thisPos = cur;
                         int otherPos = e.getValue();
-                        // Lower section ID wins (closer to entry)
-                        if (thisPos > otherPos) continue;
+                        if (thisPos > otherPos) continue; // lower-number section wins
                     }
                 }
             }
 
-            // --- Freight priority rule for 3 <-> 4 ---
-            if ((cur == 3 && next == 4) || (cur == 4 && next == 3)) {
-                boolean passengerOnPriority = sectionOccupancy.get(1) != null ||
-                        sectionOccupancy.get(5) != null ||
-                        sectionOccupancy.get(6) != null;
-                if (passengerOnPriority) continue;
+            // --- Freight coordination (3,4,7,11) ---
+            if ((cur == 3 && next == 4) || (cur == 4 && next == 3) ||
+                (cur == 7 && next == 3) || (cur == 3 && next == 7)) {
 
-                // block only if both directions occupied and neither moving away
+                // If passenger line active near 1–6–10, freight must wait
+                boolean passengerActive =
+                        (sectionOccupancy.get(1) != null) ||
+                        (sectionOccupancy.get(5) != null) ||
+                        (sectionOccupancy.get(6) != null) ||
+                        (sectionOccupancy.get(10) != null);
+
+                if (passengerActive)
+                    continue;
+
+                // If opposite freight approaching same section, block both
                 String opp3 = sectionOccupancy.get(3);
                 String opp4 = sectionOccupancy.get(4);
-                if (opp3 != null && opp4 != null) {
-                    int next3 = getNextSectionForTrain(opp3);
-                    int next4 = getNextSectionForTrain(opp4);
-                    if ((next3 == 4 && next4 == 3) || (next3 == -1 && next4 == -1))
-                        continue;
-                }
+                String opp7 = sectionOccupancy.get(7);
+
+                if ((opp3 != null && getNextSectionForTrain(opp3) == next) ||
+                    (opp4 != null && getNextSectionForTrain(opp4) == next) ||
+                    (opp7 != null && getNextSectionForTrain(opp7) == next))
+                    continue;
             }
 
+            // --- Normal occupancy or planned free section ---
             boolean willFree = occ != null && moveSet.contains(occ)
                     && getNextSectionForTrain(occ) != -1
                     && getNextSectionForTrain(occ) != next;
 
-            if (occ == null || willFree) {
+            if (occ == null || willFree)
                 plan.put(n, next);
-            }
         }
 
-        // --- Conflict resolution ---
+        // === Conflict resolution ===
         Map<Integer, List<String>> conflicts = new HashMap<>();
         for (Map.Entry<String, Integer> e : plan.entrySet()) {
             if (e.getValue() == -1) continue;
@@ -138,7 +140,6 @@ public class InterlockingImpl implements Interlocking {
         for (Map.Entry<Integer, List<String>> entry : conflicts.entrySet()) {
             List<String> claimers = entry.getValue();
             if (claimers.size() > 1) {
-                // Choose deterministic winner (lowest section first)
                 String winner = claimers.stream()
                         .min(Comparator.comparingInt(trainLocations::get))
                         .orElse(claimers.get(0));
@@ -148,7 +149,7 @@ public class InterlockingImpl implements Interlocking {
             }
         }
 
-        // --- Execution phase ---
+        // === Execution Phase ===
         int moved = 0;
         for (String n : ordered) {
             if (!plan.containsKey(n)) continue;
