@@ -1,18 +1,5 @@
 import java.util.*;
-import java.util.concurrent.locks.*;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Queue;
-import java.util.Set;
 import java.util.stream.Collectors;
-
 
 public class InterlockingImpl implements Interlocking {
 
@@ -71,12 +58,12 @@ public class InterlockingImpl implements Interlocking {
                 .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(n -> n))
                 .collect(Collectors.toList());
 
-        // Determine planned moves
+        // Planning phase
         for (String n : ordered) {
             Train t = trains.get(n);
             int cur = trainLocations.get(n);
 
-            // Destination linger: wait one tick before removal
+            // Linger at destination for one tick before removal
             if (cur == t.destination) {
                 if (!t.arrived) {
                     t.arrived = true;
@@ -90,29 +77,31 @@ public class InterlockingImpl implements Interlocking {
             int next = getNextSectionForTrain(n);
             if (next == -1) continue;
 
-            // Relaxed freight junction 3<->4 rule
+            // Relaxed 3<->4 rule: allow if the opposite side is leaving
             if ((cur == 3 && next == 4) || (cur == 4 && next == 3)) {
-                boolean blocking = false;
+                String opp3 = sectionOccupancy.get(3);
+                String opp4 = sectionOccupancy.get(4);
+                boolean blocked = false;
 
-                // Both occupied or both targeting each other?
-                if ((sectionOccupancy.get(3) != null && sectionOccupancy.get(4) != null) ||
-                    (sectionOccupancy.get(3) != null && getNextSectionForTrain(sectionOccupancy.get(3)) == 4) ||
-                    (sectionOccupancy.get(4) != null && getNextSectionForTrain(sectionOccupancy.get(4)) == 3)) {
-                    blocking = true;
+                if (opp3 != null && opp4 != null) {
+                    int next3 = getNextSectionForTrain(opp3);
+                    int next4 = getNextSectionForTrain(opp4);
+                    // Only block if both stuck or targeting each other
+                    if (next3 == 4 || next4 == 3 || next3 == -1 || next4 == -1)
+                        blocked = true;
                 }
 
-                // If passenger line active near 1/5/6, give priority to passenger
+                // Give passenger line priority if active
                 if (isFreightTrain(n) && (
                         sectionOccupancy.get(1) != null ||
                         sectionOccupancy.get(5) != null ||
-                        sectionOccupancy.get(6) != null)) {
-                    blocking = true;
-                }
+                        sectionOccupancy.get(6) != null))
+                    blocked = true;
 
-                if (blocking) continue;
+                if (blocked) continue;
             }
 
-            // Determine if section will be free this tick
+            // Section availability: empty or will be freed
             String occ = sectionOccupancy.get(next);
             boolean willBeFreed = occ != null && moveSet.contains(occ)
                     && getNextSectionForTrain(occ) != -1
@@ -123,7 +112,7 @@ public class InterlockingImpl implements Interlocking {
             }
         }
 
-        // Resolve same-target conflicts (choose smaller current section)
+        // Conflict resolution
         Map<Integer, List<String>> conflictMap = new HashMap<>();
         for (Map.Entry<String, Integer> e : plan.entrySet()) {
             if (e.getValue() == -1) continue;
@@ -142,7 +131,7 @@ public class InterlockingImpl implements Interlocking {
             }
         }
 
-        // Execute movements
+        // Execution phase
         int moved = 0;
         for (String n : ordered) {
             if (!plan.containsKey(n)) continue;
