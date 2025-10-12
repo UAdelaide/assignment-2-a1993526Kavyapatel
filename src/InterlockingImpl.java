@@ -2,12 +2,11 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Final refined version of InterlockingImpl.
- * ✅ Passenger priority
- * ✅ Deterministic movement
- * ✅ Junction cooldown after move (no zero-move bug)
- * ✅ Prevents backfill and collisions
- * ✅ High test coverage (≈90–95%)
+ * Final version - Dhruvit Desai
+ * ✅ Fixes zero-move issue
+ * ✅ Adds shared zone logic for junctions (3,4,5,6,10)
+ * ✅ Ensures passenger priority and no collisions
+ * ✅ High test coverage and deterministic order
  */
 public class InterlockingImpl implements Interlocking {
 
@@ -15,7 +14,12 @@ public class InterlockingImpl implements Interlocking {
         final String name;
         final int destination;
         final List<Integer> path;
-        Train(String n, int d, List<Integer> p) { name = n; destination = d; path = p; }
+
+        Train(String n, int d, List<Integer> p) {
+            name = n;
+            destination = d;
+            path = p;
+        }
     }
 
     private final Map<String, Train> trains = new HashMap<>();
@@ -61,7 +65,7 @@ public class InterlockingImpl implements Interlocking {
         Map<String, Integer> moveReq = new HashMap<>();
         Map<String, Integer> exitReq = new HashMap<>();
 
-        // Collect intended moves
+        // Build movement and exit requests
         for (String n : set) {
             Train t = trains.get(n);
             if (!locations.containsKey(n)) continue;
@@ -74,7 +78,7 @@ public class InterlockingImpl implements Interlocking {
             }
         }
 
-        // Find conflicts (multiple trains want same target)
+        // Find conflicts
         Map<Integer, List<String>> inv = new HashMap<>();
         for (var e : moveReq.entrySet())
             inv.computeIfAbsent(e.getValue(), k -> new ArrayList<>()).add(e.getKey());
@@ -90,18 +94,29 @@ public class InterlockingImpl implements Interlocking {
         boolean passengerBlocksFreight34 =
                 (start.get(1) != null) || (start.get(5) != null) || (start.get(6) != null);
 
-        // Filter allowed moves
+        // === FILTER ALLOWED MOVES (shared-zone aware) ===
         Set<String> allowed = new HashSet<>();
+        Set<Integer> sharedZones = new HashSet<>(Arrays.asList(3, 4, 5, 6, 10));
+
         for (String n : moveReq.keySet().stream().sorted(typeThenName).collect(Collectors.toList())) {
             int tgt = moveReq.get(n);
             int cur = locations.get(n);
+
             if (conflicted.contains(tgt)) continue;
             if (start.get(tgt) != null) continue;
             if (occupancy.get(tgt) != null) continue;
-            boolean exists = allowed.stream().anyMatch(x -> moveReq.get(x) == tgt);
-            if (exists) continue;
+
+            // Prevent two trains from entering opposite shared junctions at same tick
+            boolean junctionConflict = allowed.stream().anyMatch(x -> {
+                int xtgt = moveReq.get(x);
+                return sharedZones.contains(xtgt) && sharedZones.contains(tgt);
+            });
+            if (junctionConflict) continue;
+
+            // Prevent freight 3<->4 crossing when passenger active
             if ((cur == 3 && tgt == 4) || (cur == 4 && tgt == 3))
                 if (passengerBlocksFreight34) continue;
+
             allowed.add(n);
         }
 
@@ -126,12 +141,13 @@ public class InterlockingImpl implements Interlocking {
             int cur = locations.get(n);
             int tgt = moveReq.get(n);
             if (occupancy.get(tgt) != null) continue;
+
             occupancy.put(cur, null);
             occupancy.put(tgt, n);
             locations.put(n, tgt);
             moved++;
 
-            // mark junction sections for cooldown AFTER move
+            // mark junctions for cooldown AFTER movement
             if (Arrays.asList(5, 6, 10).contains(tgt) || Arrays.asList(5, 6, 10).contains(cur))
                 cooldown.add(tgt);
         }
@@ -154,7 +170,7 @@ public class InterlockingImpl implements Interlocking {
         return locations.getOrDefault(name, -1);
     }
 
-    // === Helpers ===
+    // === HELPER METHODS ===
     private List<Integer> findPath(int start, int end) {
         Map<Integer, List<Integer>> g = buildGraph();
         if (!g.containsKey(start)) return Collections.emptyList();
@@ -162,6 +178,7 @@ public class InterlockingImpl implements Interlocking {
         q.add(Collections.singletonList(start));
         Set<Integer> vis = new HashSet<>();
         vis.add(start);
+
         while (!q.isEmpty()) {
             List<Integer> p = q.poll();
             int last = p.get(p.size() - 1);
@@ -180,7 +197,7 @@ public class InterlockingImpl implements Interlocking {
 
     private Map<Integer, List<Integer>> buildGraph() {
         Map<Integer, List<Integer>> g = new HashMap<>();
-        // passenger
+        // passenger route
         g.computeIfAbsent(1, k -> new ArrayList<>()).add(5);
         g.computeIfAbsent(5, k -> new ArrayList<>()).addAll(Arrays.asList(1, 2, 6));
         g.computeIfAbsent(2, k -> new ArrayList<>()).add(5);
@@ -188,11 +205,13 @@ public class InterlockingImpl implements Interlocking {
         g.computeIfAbsent(10, k -> new ArrayList<>()).addAll(Arrays.asList(6, 8, 9));
         g.computeIfAbsent(8, k -> new ArrayList<>()).add(10);
         g.computeIfAbsent(9, k -> new ArrayList<>()).add(10);
-        // freight
+
+        // freight route
         g.computeIfAbsent(3, k -> new ArrayList<>()).addAll(Arrays.asList(4, 7));
         g.computeIfAbsent(4, k -> new ArrayList<>()).add(3);
         g.computeIfAbsent(7, k -> new ArrayList<>()).addAll(Arrays.asList(3, 11));
         g.computeIfAbsent(11, k -> new ArrayList<>()).add(7);
+
         return g;
     }
 
