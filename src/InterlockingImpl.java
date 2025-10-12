@@ -1,7 +1,6 @@
 import java.util.*;
 import java.util.stream.Collectors;
 
-
 public class InterlockingImpl implements Interlocking {
 
     private static class Train {
@@ -20,6 +19,9 @@ public class InterlockingImpl implements Interlocking {
     private final Map<String, Integer> locations = new HashMap<>();
     private final Map<Integer, String> occupancy = new HashMap<>();
     private final Set<Integer> valid = new HashSet<>();
+
+    // --- new global cooldown tracker ---
+    private final Set<Integer> cooldownZones = new HashSet<>();
 
     public InterlockingImpl() {
         for (int i = 1; i <= 11; i++) {
@@ -59,6 +61,9 @@ public class InterlockingImpl implements Interlocking {
         Map<String, Integer> moveReq = new HashMap<>();
         Map<String, Integer> exitReq = new HashMap<>();
 
+        // --- clear cooldowns each tick ---
+        cooldownZones.clear();
+
         // Build movement and exit requests
         for (String n : set) {
             Train t = trains.get(n);
@@ -97,19 +102,23 @@ public class InterlockingImpl implements Interlocking {
             int cur = locations.get(n);
 
             if (conflicted.contains(tgt)) continue;
-            if (start.get(tgt) != null) continue;
+            // --- allow move if target being exited this tick ---
+            if (start.get(tgt) != null && !exitReq.containsKey(start.get(tgt))) continue;
             if (occupancy.get(tgt) != null) continue;
 
             // Prevent two trains from entering opposite shared junctions at same tick
-            boolean junctionConflict = allowed.stream().anyMatch(x -> {
-                int xtgt = moveReq.get(x);
-                return sharedZones.contains(xtgt) && sharedZones.contains(tgt);
-            });
+            boolean junctionConflict = cooldownZones.contains(tgt) ||
+                allowed.stream().anyMatch(x -> {
+                    int xtgt = moveReq.get(x);
+                    return sharedZones.contains(xtgt) && sharedZones.contains(tgt);
+                });
             if (junctionConflict) continue;
 
             // Prevent freight 3<->4 crossing when passenger active
-            if ((cur == 3 && tgt == 4) || (cur == 4 && tgt == 3))
+            if ((cur == 3 && tgt == 4) || (cur == 4 && tgt == 3)) {
                 if (passengerBlocksFreight34) continue;
+                else passengerBlocksFreight34 = false; // unlock when passengers idle
+            }
 
             allowed.add(n);
         }
@@ -147,6 +156,7 @@ public class InterlockingImpl implements Interlocking {
         }
 
         cooldown.addAll(freed);
+        cooldownZones.addAll(cooldown); // store cooldowns globally
         return moved;
     }
 
