@@ -72,7 +72,7 @@ public class InterlockingImpl implements Interlocking {
             }
         }
 
-        // Conflicts (same target)
+        // Conflicts (multiple aiming at same target)
         Map<Integer, List<String>> inv = new HashMap<>();
         for (var e : moveReq.entrySet())
             inv.computeIfAbsent(e.getValue(), k -> new ArrayList<>()).add(e.getKey());
@@ -81,11 +81,12 @@ public class InterlockingImpl implements Interlocking {
                 .map(Map.Entry::getKey)
                 .collect(Collectors.toSet());
 
-        // Shared-zone and priority helpers
+        // Shared junction
         final Set<Integer> SHARED = Set.of(3, 4, 5, 6, 10);
 
+        // Prioritization:
+        // 0: leaving shared, 1: inside shared, 2: entering shared, 3: others
         Comparator<String> priority = Comparator
-                // 0: leaving shared, 1: inside shared, 2: entering shared, 3: others
                 .comparingInt((String n) -> {
                     int cur = locations.get(n);
                     int tgt = moveReq.get(n);
@@ -96,25 +97,23 @@ public class InterlockingImpl implements Interlocking {
                     if (!curS && tgtS) return 2;
                     return 3;
                 })
-                // passenger before freight
-                .thenComparing(n -> isFreight(n))
-                // stable by name
-                .thenComparing(n -> n);
+                .thenComparing(n -> isFreight(n))   // passenger before freight
+                .thenComparing(n -> n);             // stable by name
 
         boolean passengerBlocksFreight34 =
                 (start.get(1) != null) || (start.get(5) != null) || (start.get(6) != null);
 
-        // ===== FILTER: allowed set for the "first-wave" moves =====
+        // ===== FIRST-WAVE allowed moves =====
         Set<String> allowed = new HashSet<>();
         for (String n : moveReq.keySet().stream().sorted(priority).collect(Collectors.toList())) {
             int tgt = moveReq.get(n);
             int cur = locations.get(n);
 
-            if (conflicted.contains(tgt)) continue;      // same target race
+            if (conflicted.contains(tgt)) continue;      // target race
             if (start.get(tgt) != null) continue;         // occupied at tick start
-            if (occupancy.get(tgt) != null) continue;     // still occupied
+            if (occupancy.get(tgt) != null) continue;     // still occupied now
 
-            // Direction-aware: block opposite flows into shared in same tick
+            // Direction-aware: block opposite flows into shared in the same tick
             boolean junctionConflict = false;
             for (String a : allowed) {
                 int atgt = moveReq.get(a);
@@ -127,7 +126,7 @@ public class InterlockingImpl implements Interlocking {
             }
             if (junctionConflict) continue;
 
-            // Freight 3<->4 is blocked if passenger active at 1/5/6
+            // Freight 3<->4 blocked while passenger active at 1/5/6
             if ((cur == 3 && tgt == 4) || (cur == 4 && tgt == 3)) {
                 if (passengerBlocksFreight34) continue;
             }
@@ -137,8 +136,10 @@ public class InterlockingImpl implements Interlocking {
 
         // ===== EXECUTE: exits then allowed moves =====
         int moved = 0;
-        // sections freed so far in this tick
-        Set<Integer> freed = new HashSet<>();
+
+        // Track *how* sections were freed this tick
+        Set<Integer> freedByExit = new HashSet<>();
+        Set<Integer> freedByMove = new HashSet<>();
 
         // exits
         for (String n : exitReq.keySet().stream().sorted().collect(Collectors.toList())) {
@@ -146,7 +147,7 @@ public class InterlockingImpl implements Interlocking {
             int cur = locations.get(n);
             occupancy.put(cur, null);
             locations.remove(n);
-            freed.add(cur);
+            freedByExit.add(cur);
             moved++;
         }
 
@@ -160,39 +161,45 @@ public class InterlockingImpl implements Interlocking {
             occupancy.put(cur, null);
             occupancy.put(tgt, n);
             locations.put(n, tgt);
-            freed.add(cur);
+            freedByMove.add(cur);
             moved++;
         }
 
-        // ===== STRICT CASCADE: only into sections freed this tick, never enter shared in cascade =====
+        // ===== STRICT CASCADE =====
+        // - you can move only into a section freed *this tick*
+        // - you may **not** enter SHARED in cascade UNLESS that shared section was freed by an **EXIT** this tick
         boolean changed;
         do {
             changed = false;
-            Set<Integer> newlyFreed = new HashSet<>();
+            Set<Integer> newlyFreedByMove = new HashSet<>();
+
             for (String n : moveReq.keySet()) {
                 if (allowed.contains(n)) continue;        // already moved
-                if (!locations.containsKey(n)) continue;  // may have exited
+                if (!locations.containsKey(n)) continue;  // maybe exited
                 int cur = locations.get(n);
                 int nxt = moveReq.get(n);
 
-                // only move if next is one of the sections freed earlier in this tick
-                if (!freed.contains(nxt)) continue;
+                boolean wasFreedThisTick = freedByExit.contains(nxt) || freedByMove.contains(nxt);
+                if (!wasFreedThisTick) continue;
 
-                // do not let cascade *enter* shared; must wait next tick
                 boolean curS = SHARED.contains(cur);
                 boolean nxtS = SHARED.contains(nxt);
-                if (!curS && nxtS) continue;
+
+                // entering shared in cascade is allowed ONLY if target was freed by EXIT
+                if (!curS && nxtS && !freedByExit.contains(nxt)) continue;
 
                 if (occupancy.get(nxt) == null) {
                     occupancy.put(cur, null);
                     occupancy.put(nxt, n);
                     locations.put(n, nxt);
-                    newlyFreed.add(cur);
+                    newlyFreedByMove.add(cur);
                     moved++;
                     changed = true;
                 }
             }
-            freed.addAll(newlyFreed);
+            if (!newlyFreedByMove.isEmpty()) {
+                freedByMove.addAll(newlyFreedByMove);
+            }
         } while (changed);
 
         return moved;
