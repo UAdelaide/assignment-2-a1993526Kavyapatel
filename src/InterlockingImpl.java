@@ -22,6 +22,7 @@ public class InterlockingImpl implements Interlocking {
         final String name;
         final int destination;
         final List<Integer> path;
+        boolean markedForExit = false;
 
         Train(String name, int destination, List<Integer> path) {
             this.name = name;
@@ -76,62 +77,51 @@ public class InterlockingImpl implements Interlocking {
 
         Map<String, Integer> plannedMoves = new HashMap<>();
         
-        // --- Deterministic Sorting ---
-        // 1. Prioritize Passenger trains.
-        // 2. As a tie-breaker for all conflicts, sort by train name alphabetically.
-        // This is the key to matching the autograder's deadlock resolution.
         List<String> sortedTrainNames = trainsInMoveCall.stream()
                 .filter(trainLocations::containsKey)
-                .sorted(Comparator.comparing(this::isFreightTrain) // freight trains (true) come after passenger (false)
-                                  .thenComparing(name -> name)) // then sort by name alphabetically
+                .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(name -> name))
                 .collect(Collectors.toList());
 
-        // --- Definitive Iterative Planning Phase ---
-        // This loop continues as long as we can successfully plan at least one new move per iteration.
-        // This correctly resolves complex chain reactions (A->B->C->empty).
         int lastIterationPlannedCount = -1;
         while (plannedMoves.size() > lastIterationPlannedCount) {
             lastIterationPlannedCount = plannedMoves.size();
 
             for (String trainName : sortedTrainNames) {
-                if (plannedMoves.containsKey(trainName)) {
-                    continue; // This train already has a confirmed plan.
-                }
+                if (plannedMoves.containsKey(trainName)) continue;
 
                 int currentSection = trainLocations.get(trainName);
                 Train train = trains.get(trainName);
 
-                // Plan for trains to exit if they are at their destination.
-                if (currentSection == train.destination) {
+                if (train.markedForExit) {
                     plannedMoves.put(trainName, -1);
+                    continue;
+                }
+                if (currentSection == train.destination) {
+                    train.markedForExit = true;
                     continue;
                 }
 
                 int nextSection = getNextSectionForTrain(trainName);
                 if (nextSection == -1) continue;
 
-                // --- Bulletproof Availability Check ---
                 String occupant = sectionOccupancy.get(nextSection);
                 
-                // The target section is available if:
-                // 1. It's empty AND no other train has planned to move into it yet.
-                // 2. It's occupied by a train that is ALSO in this move call AND has a confirmed plan to move somewhere else.
-                boolean isNextSectionFree = (occupant == null && !plannedMoves.containsValue(nextSection));
-                boolean canOccupantMove = (occupant != null && trainsInMoveCall.contains(occupant) && plannedMoves.containsKey(occupant) && !plannedMoves.containsValue(nextSection));
+                boolean isNextSectionAvailable = (occupant == null) || 
+                                                 (trainsInMoveCall.contains(occupant) && plannedMoves.containsKey(occupant) && !plannedMoves.containsValue(nextSection));
                 
-                if (isNextSectionFree || canOccupantMove) {
-                    // Junction Priority Check based on assignment PDF
+                if (isNextSectionAvailable) {
                     if ((currentSection == 3 && nextSection == 4) || (currentSection == 4 && nextSection == 3)) {
                          if (sectionOccupancy.get(1) != null || sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null) {
-                            continue; // Blocked by passenger train.
+                            continue;
                         }
                     }
-                    plannedMoves.put(trainName, nextSection);
+                    if(!plannedMoves.containsValue(nextSection)){
+                        plannedMoves.put(trainName, nextSection);
+                    }
                 }
             }
         }
 
-        // --- Execution Phase ---
         int movedCount = 0;
         for (String trainName : sortedTrainNames) {
             if (plannedMoves.containsKey(trainName)) {
@@ -139,10 +129,11 @@ public class InterlockingImpl implements Interlocking {
                 if (!trainLocations.containsKey(trainName)) continue; 
                 int oldSection = trainLocations.get(trainName);
 
-                if (newSection == -1) { // Train exits
+                if (newSection == -1) {
                     sectionOccupancy.put(oldSection, null);
                     trainLocations.remove(trainName);
-                } else { // Train moves
+                    trains.get(trainName).markedForExit = false;
+                } else {
                     sectionOccupancy.put(oldSection, null);
                     sectionOccupancy.put(newSection, trainName);
                     trainLocations.put(trainName, newSection);
@@ -169,7 +160,6 @@ public class InterlockingImpl implements Interlocking {
         return trainLocations.getOrDefault(trainName, -1);
     }
 
-    // --- Helper Methods ---
     private List<Integer> findPath(int start, int end) {
         Map<Integer, List<Integer>> fullGraph = buildFullGraph();
         if (!fullGraph.containsKey(start)) return Collections.emptyList();
@@ -239,3 +229,4 @@ public class InterlockingImpl implements Interlocking {
         return Arrays.asList(3, 11, 4, 7).contains(firstSection);
     }
 }
+
