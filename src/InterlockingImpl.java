@@ -3,7 +3,7 @@ import java.util.stream.Collectors;
 
 /**
  * Final tuned version — deterministic, safe, and balanced.
- * Adds chain-reaction move handling for multi-train progress.
+ * Fixes over-blocking of freight trains while keeping passenger priority.
  */
 public class InterlockingImpl implements Interlocking {
 
@@ -105,28 +105,39 @@ public class InterlockingImpl implements Interlocking {
                 }
             }
 
-            // --- Freight coordination (3,4,7,11) ---
-            if ((cur == 3 && next == 4) || (cur == 4 && next == 3) ||
-                (cur == 7 && next == 3) || (cur == 3 && next == 7)) {
+                // --- Freight coordination (3,4,7,11) improved ---
+                   if ((cur == 3 && next == 4) || (cur == 4 && next == 3) ||
+                   (cur == 7 && next == 3) || (cur == 3 && next == 7)) {
 
-                boolean passengerActive =
-                        (sectionOccupancy.get(5) != null) ||
-                        (sectionOccupancy.get(6) != null);
+                // Passenger priority but not permanent blocking
+                  String pass5 = sectionOccupancy.get(5);
+                  String pass6 = sectionOccupancy.get(6);
+                
+            
+                boolean passengerNear =
+                (pass5 != null && !moveSet.contains(pass5)) ||
+                (pass6 != null && !moveSet.contains(pass6));
 
-                if (passengerActive) continue;
+                
+             if (passengerNear) continue; // actively blocking junction
 
-                String opp3 = sectionOccupancy.get(3);
-                String opp4 = sectionOccupancy.get(4);
-                String opp7 = sectionOccupancy.get(7);
+                 // prevent head-on freight collision
+                 String opp3 = sectionOccupancy.get(3);
+                 String opp4 = sectionOccupancy.get(4);
+                 String opp7 = sectionOccupancy.get(7);
 
-                boolean blockedByOpposite =
-                        (opp3 != null && getNextSectionForTrain(opp3) == next) ||
-                        (opp4 != null && getNextSectionForTrain(opp4) == next) ||
-                        (opp7 != null && getNextSectionForTrain(opp7) == next);
+                 boolean oppositeConflict =
+                (opp3 != null && getNextSectionForTrain(opp3) == next) ||
+                (opp4 != null && getNextSectionForTrain(opp4) == next) ||
+                (opp7 != null && getNextSectionForTrain(opp7) == next);
 
-                if (blockedByOpposite) continue;
+            if (oppositeConflict) continue;
+
+                   // ✅ allow freight to move now (if safe)
             }
+                
 
+            // --- Normal occupancy or planned free section ---
             boolean willFree = occ != null && moveSet.contains(occ)
                     && getNextSectionForTrain(occ) != -1
                     && getNextSectionForTrain(occ) != next;
@@ -136,24 +147,7 @@ public class InterlockingImpl implements Interlocking {
             }
         }
 
-        // === Chain Reaction Phase ===
-        boolean changed = true;
-        while (changed) {
-            changed = false;
-            for (String tn : ordered) {
-                if (plan.containsKey(tn)) continue;
-                int cur = trainLocations.get(tn);
-                int next = getNextSectionForTrain(tn);
-                if (next == -1) continue;
-                String occ = sectionOccupancy.get(next);
-                if (occ != null && plan.containsKey(occ) && plan.get(occ) != next) {
-                    plan.put(tn, next);
-                    changed = true;
-                }
-            }
-        }
-
-        // === Conflict Resolution ===
+        // === Conflict resolution ===
         Map<Integer, List<String>> conflicts = new HashMap<>();
         for (Map.Entry<String, Integer> e : plan.entrySet()) {
             if (e.getValue() == -1) continue;
