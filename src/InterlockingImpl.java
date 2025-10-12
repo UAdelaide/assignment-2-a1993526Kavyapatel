@@ -1,5 +1,18 @@
 import java.util.*;
+import java.util.concurrent.locks.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
 import java.util.stream.Collectors;
+
 
 public class InterlockingImpl implements Interlocking {
 
@@ -18,33 +31,33 @@ public class InterlockingImpl implements Interlocking {
     private final Map<String, Train> trains = new HashMap<>();
     private final Map<String, Integer> trainLocations = new HashMap<>();
     private final Map<Integer, String> sectionOccupancy = new HashMap<>();
-    private final Set<Integer> validSections = new HashSet<>();
     private final Map<Integer, Integer> lastVacated = new HashMap<>();
+    private final Set<Integer> validSections = new HashSet<>();
     private int tick = 0;
 
     public InterlockingImpl() {
         for (int i = 1; i <= 11; i++) {
             validSections.add(i);
             sectionOccupancy.put(i, null);
-            lastVacated.put(i, -2);
+            lastVacated.put(i, -1);
         }
     }
 
     @Override
-    public void addTrain(String trainName, int entry, int dest) {
-        if (trains.containsKey(trainName))
-            throw new IllegalArgumentException("Duplicate train: " + trainName);
+    public void addTrain(String name, int entry, int dest) {
+        if (trains.containsKey(name))
+            throw new IllegalArgumentException("Duplicate train");
         if (!validSections.contains(entry) || !validSections.contains(dest))
             throw new IllegalArgumentException("Invalid section");
         if (sectionOccupancy.get(entry) != null)
-            throw new IllegalStateException("Entry occupied: " + entry);
+            throw new IllegalStateException("Section occupied");
         List<Integer> path = findPath(entry, dest);
         if (path.isEmpty())
-            throw new IllegalArgumentException("No valid path from " + entry + " to " + dest);
-        Train t = new Train(trainName, dest, path);
-        trains.put(trainName, t);
-        trainLocations.put(trainName, entry);
-        sectionOccupancy.put(entry, trainName);
+            throw new IllegalArgumentException("No valid path");
+        Train t = new Train(name, dest, path);
+        trains.put(name, t);
+        trainLocations.put(name, entry);
+        sectionOccupancy.put(entry, name);
     }
 
     @Override
@@ -54,11 +67,13 @@ public class InterlockingImpl implements Interlocking {
         for (String n : moveSet)
             if (!trains.containsKey(n))
                 throw new IllegalArgumentException("No train: " + n);
+
         Map<String, Integer> plan = new HashMap<>();
         List<String> ordered = moveSet.stream()
                 .filter(trainLocations::containsKey)
                 .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(n -> n))
                 .collect(Collectors.toList());
+
         int lastCount = -1;
         while (plan.size() > lastCount) {
             lastCount = plan.size();
@@ -67,49 +82,53 @@ public class InterlockingImpl implements Interlocking {
                 if (!trainLocations.containsKey(n)) continue;
                 Train t = trains.get(n);
                 int cur = trainLocations.get(n);
+
+                // one-cycle linger at destination or section 10
                 if (cur == t.destination || cur == 10) {
-                    if (t.arrivalCount < 2) { t.arrivalCount++; continue; }
+                    if (t.arrivalCount == 0) { t.arrivalCount++; continue; }
                     plan.put(n, -1);
                     continue;
                 }
+
                 int next = getNextSectionForTrain(n);
                 if (next == -1) continue;
                 String occ = sectionOccupancy.get(next);
-                if (tick - lastVacated.getOrDefault(next, -2) < 2) continue;
+
+                // cooldown shortened to 1 tick
+                if (tick - lastVacated.getOrDefault(next, -1) < 1) continue;
                 if (plan.containsValue(next)) continue;
                 if (occ != null && plan.containsKey(occ) && plan.get(occ) == cur) continue;
+
                 boolean free = (occ == null) || (moveSet.contains(occ) && plan.containsKey(occ));
                 if (!free) continue;
+
+                // 3↔4 freight junction restriction
                 if ((cur == 3 && next == 4) || (cur == 4 && next == 3)) {
-                    boolean blocked = plan.values().contains(cur);
-                    if (blocked) continue;
-                    if (tick - Math.max(lastVacated.get(3), lastVacated.get(4)) < 2)
+                    if (plan.values().contains(cur)) continue;
+                    if (tick - Math.max(lastVacated.get(3), lastVacated.get(4)) < 1)
                         continue;
                 }
+
+                // 2-5-6 merge rule
                 if ((cur == 5 && next == 6) || (cur == 2 && next == 5)) {
-                    boolean comingFrom10 = plan.entrySet().stream()
-                            .anyMatch(e -> trainLocations.get(e.getKey()) == 10 && e.getValue() == 6);
-                    if (comingFrom10) continue;
-                    if (tick - Math.max(lastVacated.get(5), lastVacated.get(6)) < 2)
+                    if (tick - Math.max(lastVacated.get(5), lastVacated.get(6)) < 1)
                         continue;
                 }
+
+                // 8/9→10 merge rule
                 if ((cur == 8 || cur == 9) && next == 10) {
-                    boolean comingFrom6 = plan.entrySet().stream()
-                            .anyMatch(e -> trainLocations.get(e.getKey()) == 6 && e.getValue() == 10);
-                    if (comingFrom6) continue;
-                    if (tick - lastVacated.get(10) < 2) continue;
+                    if (tick - lastVacated.get(10) < 1) continue;
                 }
+
                 plan.put(n, next);
             }
         }
+
         int moved = 0;
-        Set<Integer> usedTargets = new HashSet<>();
         for (String n : ordered) {
             if (!plan.containsKey(n)) continue;
             int cur = trainLocations.get(n);
             int next = plan.get(n);
-            if (next != -1 && usedTargets.contains(next)) continue;
-            usedTargets.add(next);
             sectionOccupancy.put(cur, null);
             lastVacated.put(cur, tick);
             if (next == -1) {
@@ -120,6 +139,7 @@ public class InterlockingImpl implements Interlocking {
             }
             moved++;
         }
+
         if (moved == 0) {
             for (String n : ordered) {
                 if (isFreightTrain(n)) {
@@ -142,14 +162,14 @@ public class InterlockingImpl implements Interlocking {
     @Override
     public String getSection(int s) {
         if (!validSections.contains(s))
-            throw new IllegalArgumentException("Invalid section " + s);
+            throw new IllegalArgumentException();
         return sectionOccupancy.get(s);
     }
 
     @Override
     public int getTrain(String n) {
         if (!trains.containsKey(n))
-            throw new IllegalArgumentException("No train: " + n);
+            throw new IllegalArgumentException();
         return trainLocations.getOrDefault(n, -1);
     }
 
@@ -199,13 +219,6 @@ public class InterlockingImpl implements Interlocking {
         if (i != -1 && i < tr.path.size() - 1)
             return tr.path.get(i + 1);
         return -1;
-    }
-
-    private boolean isPassengerTrain(String t) {
-        Train tr = trains.get(t);
-        if (tr == null || tr.path.isEmpty()) return false;
-        int f = tr.path.get(0);
-        return Arrays.asList(1, 2, 5, 6, 8, 9, 10).contains(f);
     }
 
     private boolean isFreightTrain(String t) {
