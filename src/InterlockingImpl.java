@@ -102,13 +102,24 @@ public class InterlockingImpl implements Interlocking {
 
                 // If passenger line active near 1–6–10, freight must wait
                 boolean passengerActive =
-                        (sectionOccupancy.get(1) != null) ||
-                        (sectionOccupancy.get(5) != null) ||
-                        (sectionOccupancy.get(6) != null) ||
-                        (sectionOccupancy.get(10) != null);
+                (sectionOccupancy.get(5) != null) ||
+                (sectionOccupancy.get(6) != null);
 
-                if (passengerActive)
-                    continue;
+              if (passengerActive)
+              continue;
+
+          // allow freight if the opposing direction just cleared
+          String opp3 = sectionOccupancy.get(3);
+          String opp4 = sectionOccupancy.get(4);
+          String opp7 = sectionOccupancy.get(7);
+
+          boolean blockedByOpposite =
+          (opp3 != null && getNextSectionForTrain(opp3) == next) ||
+          (opp4 != null && getNextSectionForTrain(opp4) == next) ||
+          (opp7 != null && getNextSectionForTrain(opp7) == next);
+
+          if (blockedByOpposite)
+          continue;
 
                 // If opposite freight approaching same section, block both
                 String opp3 = sectionOccupancy.get(3);
