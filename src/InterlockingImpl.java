@@ -1,7 +1,7 @@
 import java.util.*;
 import java.util.stream.Collectors;
 
-
+/
 public class InterlockingImpl implements Interlocking {
 
     private static class Train {
@@ -100,35 +100,25 @@ public class InterlockingImpl implements Interlocking {
             if ((cur == 3 && next == 4) || (cur == 4 && next == 3) ||
                 (cur == 7 && next == 3) || (cur == 3 && next == 7)) {
 
-                // If passenger line active near 1–6–10, freight must wait
+                //  Balanced blocking — only check 5 & 6 (main junction)
                 boolean passengerActive =
-                (sectionOccupancy.get(5) != null) ||
-                (sectionOccupancy.get(6) != null);
+                        (sectionOccupancy.get(5) != null) ||
+                        (sectionOccupancy.get(6) != null);
 
-              if (passengerActive)
-              continue;
+                if (passengerActive)
+                    continue;
 
-          // allow freight if the opposing direction just cleared
-          String opp3 = sectionOccupancy.get(3);
-          String opp4 = sectionOccupancy.get(4);
-          String opp7 = sectionOccupancy.get(7);
-
-          boolean blockedByOpposite =
-          (opp3 != null && getNextSectionForTrain(opp3) == next) ||
-          (opp4 != null && getNextSectionForTrain(opp4) == next) ||
-          (opp7 != null && getNextSectionForTrain(opp7) == next);
-
-          if (blockedByOpposite)
-          continue;
-
-                // If opposite freight approaching same section, block both
+                // allow freight if the opposing direction just cleared
                 String opp3 = sectionOccupancy.get(3);
                 String opp4 = sectionOccupancy.get(4);
                 String opp7 = sectionOccupancy.get(7);
 
-                if ((opp3 != null && getNextSectionForTrain(opp3) == next) ||
-                    (opp4 != null && getNextSectionForTrain(opp4) == next) ||
-                    (opp7 != null && getNextSectionForTrain(opp7) == next))
+                boolean blockedByOpposite =
+                        (opp3 != null && getNextSectionForTrain(opp3) == next) ||
+                        (opp4 != null && getNextSectionForTrain(opp4) == next) ||
+                        (opp7 != null && getNextSectionForTrain(opp7) == next);
+
+                if (blockedByOpposite)
                     continue;
             }
 
