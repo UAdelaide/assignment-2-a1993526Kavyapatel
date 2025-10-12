@@ -49,29 +49,30 @@ public class InterlockingImpl implements Interlocking {
 
     @Override
     public int moveTrains(String... trainNames) throws IllegalArgumentException {
-        Set<String> set = new HashSet<>(Arrays.asList(trainNames));
-        for (String n : set)
+        Set<String> moveSet = new HashSet<>(Arrays.asList(trainNames));
+        for (String n : moveSet)
             if (!trains.containsKey(n))
                 throw new IllegalArgumentException("Train " + n + " not found");
 
+        // Snapshot at tick start
         Map<Integer, String> start = new HashMap<>(occupancy);
+
+        // Build requests
         Map<String, Integer> moveReq = new HashMap<>();
         Map<String, Integer> exitReq = new HashMap<>();
-
-        // Build movement and exit requests
-        for (String n : set) {
-            Train t = trains.get(n);
+        for (String n : moveSet) {
             if (!locations.containsKey(n)) continue;
+            Train t = trains.get(n);
             int cur = locations.get(n);
             if (cur == t.destination) {
-                exitReq.put(n, -1);
+                exitReq.put(n, -1); // exit this tick
             } else {
                 int nxt = getNext(n);
                 if (nxt != -1) moveReq.put(n, nxt);
             }
         }
 
-        // Find conflicts
+        // Conflicts (same target)
         Map<Integer, List<String>> inv = new HashMap<>();
         for (var e : moveReq.entrySet())
             inv.computeIfAbsent(e.getValue(), k -> new ArrayList<>()).add(e.getKey());
@@ -80,50 +81,66 @@ public class InterlockingImpl implements Interlocking {
                 .map(Map.Entry::getKey)
                 .collect(Collectors.toSet());
 
-        Comparator<String> typeThenName = Comparator
-                .comparing((String n) -> isFreight(n))
+        // Shared-zone and priority helpers
+        final Set<Integer> SHARED = Set.of(3, 4, 5, 6, 10);
+
+        Comparator<String> priority = Comparator
+                // 0: leaving shared, 1: inside shared, 2: entering shared, 3: others
+                .comparingInt((String n) -> {
+                    int cur = locations.get(n);
+                    int tgt = moveReq.get(n);
+                    boolean curS = SHARED.contains(cur);
+                    boolean tgtS = SHARED.contains(tgt);
+                    if (curS && !tgtS) return 0;
+                    if (curS && tgtS)  return 1;
+                    if (!curS && tgtS) return 2;
+                    return 3;
+                })
+                // passenger before freight
+                .thenComparing(n -> isFreight(n))
+                // stable by name
                 .thenComparing(n -> n);
 
         boolean passengerBlocksFreight34 =
                 (start.get(1) != null) || (start.get(5) != null) || (start.get(6) != null);
 
-        // === FILTER ALLOWED MOVES (shared-zone aware) ===
+        // ===== FILTER: allowed set for the "first-wave" moves =====
         Set<String> allowed = new HashSet<>();
-        Set<Integer> sharedZones = new HashSet<>(Arrays.asList(3, 4, 5, 6, 10));
-
-        for (String n : moveReq.keySet().stream().sorted(typeThenName).collect(Collectors.toList())) {
+        for (String n : moveReq.keySet().stream().sorted(priority).collect(Collectors.toList())) {
             int tgt = moveReq.get(n);
             int cur = locations.get(n);
 
-            if (conflicted.contains(tgt)) continue;
-            if (start.get(tgt) != null) continue;
-            if (occupancy.get(tgt) != null) continue;
+            if (conflicted.contains(tgt)) continue;      // same target race
+            if (start.get(tgt) != null) continue;         // occupied at tick start
+            if (occupancy.get(tgt) != null) continue;     // still occupied
 
-            // === Direction-aware shared junction conflict check ===
+            // Direction-aware: block opposite flows into shared in same tick
             boolean junctionConflict = false;
-            for (String other : allowed) {
-                int xtgt = moveReq.get(other);
-                int xcur = locations.get(other);
-                boolean sameDirection = (xcur < xtgt && cur < tgt) || (xcur > xtgt && cur > tgt);
-                if (sharedZones.contains(xtgt) && sharedZones.contains(tgt) && !sameDirection) {
-                    junctionConflict = true;
-                    break;
+            for (String a : allowed) {
+                int atgt = moveReq.get(a);
+                int acur = locations.get(a);
+                boolean bothSharedTargets = SHARED.contains(atgt) && SHARED.contains(tgt);
+                boolean sameDir = (acur < atgt && cur < tgt) || (acur > atgt && cur > tgt);
+                if (bothSharedTargets && !sameDir) {
+                    junctionConflict = true; break;
                 }
             }
             if (junctionConflict) continue;
 
-            // Prevent freight 3<->4 crossing when passenger active
-            if ((cur == 3 && tgt == 4) || (cur == 4 && tgt == 3))
+            // Freight 3<->4 is blocked if passenger active at 1/5/6
+            if ((cur == 3 && tgt == 4) || (cur == 4 && tgt == 3)) {
                 if (passengerBlocksFreight34) continue;
+            }
 
             allowed.add(n);
         }
 
-        // === EXECUTION PHASE ===
+        // ===== EXECUTE: exits then allowed moves =====
         int moved = 0;
+        // sections freed so far in this tick
         Set<Integer> freed = new HashSet<>();
 
-        // Handle exits first
+        // exits
         for (String n : exitReq.keySet().stream().sorted().collect(Collectors.toList())) {
             if (!locations.containsKey(n)) continue;
             int cur = locations.get(n);
@@ -133,8 +150,8 @@ public class InterlockingImpl implements Interlocking {
             moved++;
         }
 
-        // Execute allowed moves
-        for (String n : allowed.stream().sorted(typeThenName).collect(Collectors.toList())) {
+        // first-wave moves
+        for (String n : allowed.stream().sorted(priority).collect(Collectors.toList())) {
             if (!locations.containsKey(n)) continue;
             int cur = locations.get(n);
             int tgt = moveReq.get(n);
@@ -143,33 +160,40 @@ public class InterlockingImpl implements Interlocking {
             occupancy.put(cur, null);
             occupancy.put(tgt, n);
             locations.put(n, tgt);
-            moved++;
             freed.add(cur);
+            moved++;
         }
 
-        // === IMPROVED CASCADE FIX: keep moving until no trains can advance ===
-        boolean movedThisRound;
+        // ===== STRICT CASCADE: only into sections freed this tick, never enter shared in cascade =====
+        boolean changed;
         do {
-            movedThisRound = false;
+            changed = false;
             Set<Integer> newlyFreed = new HashSet<>();
-
             for (String n : moveReq.keySet()) {
-                if (allowed.contains(n)) continue;
-                if (!locations.containsKey(n)) continue;
-
+                if (allowed.contains(n)) continue;        // already moved
+                if (!locations.containsKey(n)) continue;  // may have exited
                 int cur = locations.get(n);
-                int next = moveReq.get(n);
-                if (occupancy.get(next) == null) {
+                int nxt = moveReq.get(n);
+
+                // only move if next is one of the sections freed earlier in this tick
+                if (!freed.contains(nxt)) continue;
+
+                // do not let cascade *enter* shared; must wait next tick
+                boolean curS = SHARED.contains(cur);
+                boolean nxtS = SHARED.contains(nxt);
+                if (!curS && nxtS) continue;
+
+                if (occupancy.get(nxt) == null) {
                     occupancy.put(cur, null);
-                    occupancy.put(next, n);
-                    locations.put(n, next);
-                    moved++;
+                    occupancy.put(nxt, n);
+                    locations.put(n, nxt);
                     newlyFreed.add(cur);
-                    movedThisRound = true;
+                    moved++;
+                    changed = true;
                 }
             }
             freed.addAll(newlyFreed);
-        } while (movedThisRound);
+        } while (changed);
 
         return moved;
     }
@@ -188,7 +212,7 @@ public class InterlockingImpl implements Interlocking {
         return locations.getOrDefault(name, -1);
     }
 
-    // === HELPER METHODS ===
+    // ===== PATHFINDING =====
     private List<Integer> findPath(int start, int end) {
         Map<Integer, List<Integer>> g = buildGraph();
         if (!g.containsKey(start)) return Collections.emptyList();
