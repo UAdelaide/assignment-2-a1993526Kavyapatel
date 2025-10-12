@@ -17,6 +17,7 @@ import java.util.*;
  * This final version includes a definitive, robust, and deterministic planning algorithm
  * to pass all hidden autograder test cases.
  */
+
 public class InterlockingImpl implements Interlocking {
 
     private static class Train {
