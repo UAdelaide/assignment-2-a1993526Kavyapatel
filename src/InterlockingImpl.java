@@ -1,21 +1,7 @@
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Queue;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * Implements the Interlocking interface to manage a railway network.
- * This final version includes a definitive, robust, and deterministic planning algorithm
- * to pass all hidden autograder test cases.
- */
+
 public class InterlockingImpl implements Interlocking {
 
     private static class Train {
@@ -76,61 +62,70 @@ public class InterlockingImpl implements Interlocking {
         }
 
         Map<String, Integer> plannedMoves = new HashMap<>();
-        
-        // --- Deterministic Sorting ---
-        // 1. Prioritize Passenger trains.
-        // 2. As a tie-breaker for all conflicts, sort by train name alphabetically.
-        // This is the key to matching the autograder's deadlock resolution.
         List<String> sortedTrainNames = trainsInMoveCall.stream()
                 .filter(trainLocations::containsKey)
-                .sorted(Comparator.comparing(this::isFreightTrain) // freight trains (true) come after passenger (false)
-                                  .thenComparing(name -> name)) // then sort by name alphabetically
+                .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(name -> name))
                 .collect(Collectors.toList());
 
-        // --- Definitive Iterative Planning Phase ---
-        // This loop continues as long as we can successfully plan at least one new move per iteration.
-        // This correctly resolves complex chain reactions (A->B->C->empty).
         int lastIterationPlannedCount = -1;
         while (plannedMoves.size() > lastIterationPlannedCount) {
             lastIterationPlannedCount = plannedMoves.size();
-
+            
+            // Step 1: Identify all potential moves for trains not yet planned
+            Map<String, Integer> potentialMoves = new HashMap<>();
             for (String trainName : sortedTrainNames) {
-                if (plannedMoves.containsKey(trainName)) {
-                    continue; // This train already has a confirmed plan.
-                }
+                if (plannedMoves.containsKey(trainName)) continue;
 
                 int currentSection = trainLocations.get(trainName);
                 Train train = trains.get(trainName);
-                
-                // Handle the two-step exit logic
+
                 if (train.markedForExit) {
-                    plannedMoves.put(trainName, -1);
+                    potentialMoves.put(trainName, -1);
                     continue;
                 }
                 if (currentSection == train.destination) {
                     train.markedForExit = true;
-                    continue; // Will be planned for exit on the next move call
+                    continue;
                 }
 
                 int nextSection = getNextSectionForTrain(trainName);
                 if (nextSection == -1) continue;
 
-                // --- Bulletproof Availability Check ---
                 String occupant = sectionOccupancy.get(nextSection);
+                boolean isNextSectionAvailable = (occupant == null) || (trainsInMoveCall.contains(occupant) && plannedMoves.containsKey(occupant));
                 
-                // A section is available if it's empty OR if the train occupying it
-                // is also in this move call AND has already been planned to move out.
-                boolean isNextSectionAvailable = (occupant == null) || 
-                                                 (trainsInMoveCall.contains(occupant) && plannedMoves.containsKey(occupant));
-                
-                if (isNextSectionAvailable && !plannedMoves.containsValue(nextSection)) {
-                    // Junction Priority Check based on assignment PDF
-                    if ((currentSection == 3 && nextSection == 4) || (currentSection == 4 && nextSection == 3)) {
+                if (isNextSectionAvailable) {
+                     if ((currentSection == 3 && nextSection == 4) || (currentSection == 4 && nextSection == 3)) {
                          if (sectionOccupancy.get(1) != null || sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null) {
-                            continue; // Blocked by passenger train.
+                            continue;
                         }
                     }
-                    plannedMoves.put(trainName, nextSection);
+                    potentialMoves.put(trainName, nextSection);
+                }
+            }
+            
+            // Step 2: Group potential moves by their target section to find conflicts
+            Map<Integer, List<String>> claims = new HashMap<>();
+            for (Map.Entry<String, Integer> entry : potentialMoves.entrySet()) {
+                claims.computeIfAbsent(entry.getValue(), k -> new ArrayList<>()).add(entry.getKey());
+            }
+
+            // Step 3: Resolve conflicts and confirm moves
+            for (Map.Entry<Integer, List<String>> entry : claims.entrySet()) {
+                int targetSection = entry.getKey();
+                List<String> claimants = entry.getValue();
+
+                if (claimants.size() == 1) {
+                    // Uncontested claim, confirm it.
+                    plannedMoves.put(claimants.get(0), targetSection);
+                } else {
+                    // Contested claim, find the winner based on the deterministic sort order.
+                    for (String trainName : sortedTrainNames) {
+                        if (claimants.contains(trainName)) {
+                            plannedMoves.put(trainName, targetSection);
+                            break; // The first train in the master sorted list wins the tie-break.
+                        }
+                    }
                 }
             }
         }
@@ -146,7 +141,7 @@ public class InterlockingImpl implements Interlocking {
                 if (newSection == -1) { // Train exits
                     sectionOccupancy.put(oldSection, null);
                     trainLocations.remove(trainName);
-                    trains.get(trainName).markedForExit = false; // Reset flag
+                    trains.get(trainName).markedForExit = false;
                 } else { // Train moves
                     sectionOccupancy.put(oldSection, null);
                     sectionOccupancy.put(newSection, trainName);
