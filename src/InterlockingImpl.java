@@ -1,7 +1,6 @@
 import java.util.*;
 import java.util.stream.Collectors;
 
-
 public class InterlockingImpl implements Interlocking {
 
     private static class Train {
@@ -29,144 +28,130 @@ public class InterlockingImpl implements Interlocking {
     }
 
     @Override
-    public void addTrain(String trainName, int entryTrackSection, int destinationTrackSection) {
+    public void addTrain(String trainName, int entryTrackSection, int destinationTrackSection)
+            throws IllegalArgumentException, IllegalStateException {
+        if (trainName == null) throw new IllegalArgumentException("Train name is null.");
         if (trains.containsKey(trainName)) {
-            throw new IllegalArgumentException("Train name already used: " + trainName);
+            throw new IllegalArgumentException("Train name '" + trainName + "' is already in use.");
         }
         if (!validSections.contains(entryTrackSection) || !validSections.contains(destinationTrackSection)) {
-            throw new IllegalArgumentException("Invalid section");
+            throw new IllegalArgumentException("Invalid entry or destination track section.");
         }
         if (sectionOccupancy.get(entryTrackSection) != null) {
-            throw new IllegalStateException("Entry section occupied");
+            throw new IllegalStateException("Entry track section " + entryTrackSection + " is already occupied.");
         }
-
         List<Integer> path = findPath(entryTrackSection, destinationTrackSection);
         if (path.isEmpty()) {
-            throw new IllegalArgumentException("No valid path");
+            throw new IllegalArgumentException(
+                    "No valid path from entry " + entryTrackSection + " to destination " + destinationTrackSection);
         }
-
-        trains.put(trainName, new Train(trainName, destinationTrackSection, path));
+        Train t = new Train(trainName, destinationTrackSection, path);
+        trains.put(trainName, t);
         trainLocations.put(trainName, entryTrackSection);
         sectionOccupancy.put(entryTrackSection, trainName);
     }
 
     @Override
-    public int moveTrains(String... trainNames) {
-        Set<String> moveSet = new HashSet<>(Arrays.asList(trainNames));
-        for (String n : moveSet) {
-            if (!trains.containsKey(n))
-                throw new IllegalArgumentException("Unknown train: " + n);
+    public int moveTrains(String... trainNames) throws IllegalArgumentException {
+        if (trainNames == null) trainNames = new String[0];
+        // Validate
+        Set<String> toMove = new HashSet<>(Arrays.asList(trainNames));
+        for (String n : toMove) {
+            if (!trains.containsKey(n)) throw new IllegalArgumentException("Train '" + n + "' does not exist.");
         }
 
-        Comparator<String> prio = Comparator
-                .comparing((String n) -> isFreightTrain(n)) // passenger (false) before freight (true)
+        // Deterministic priority: passenger first (false < true), then by name
+        Comparator<String> priority = Comparator
+                .comparing((String n) -> isFreightTrain(n)) // passenger=false first
                 .thenComparing(n -> n);
 
-        List<String> ordered = moveSet.stream()
-                .filter(trainLocations::containsKey)
-                .sorted(prio)
+        List<String> order = toMove.stream()
+                .filter(trainLocations::containsKey) // still on corridor
+                .sorted(priority)
                 .collect(Collectors.toList());
 
-        // Check if any passenger is using the main corridor this tick
-        Set<Integer> mainCorridor = new HashSet<>(Arrays.asList(1, 2, 5, 6));
-        boolean passengerUsingCorridor = ordered.stream().anyMatch(t -> {
-            if (!isPassengerTrain(t)) return false;
-            int cur = trainLocations.get(t);
-            int nxt = getNextSectionForTrain(t);
-            return mainCorridor.contains(cur) || mainCorridor.contains(nxt);
-        });
+        Map<String, Integer> planned = new HashMap<>();
 
-        Map<String, Integer> plan = new HashMap<>();
+        // Iteratively plan moves until no new plans can be added
+        int lastPlanned = -1;
+        while (planned.size() > lastPlanned) {
+            lastPlanned = planned.size();
 
-        // === Planning Phase ===
-        for (String n : ordered) {
-            Train t = trains.get(n);
-            int cur = trainLocations.get(n);
+            for (String name : order) {
+                if (planned.containsKey(name)) continue;
+                Integer cur = trainLocations.get(name);
+                if (cur == null) continue; // already exited earlier in planning
+                Train t = trains.get(name);
 
-            // Exit immediately if already at destination
-            if (cur == t.destination) {
-                plan.put(n, -1);
-                continue;
-            }
-
-            int next = getNextSectionForTrain(n);
-            if (next == -1) continue;
-
-            String occ = sectionOccupancy.get(next);
-
-            // Freight crossing control (3↔4↔7)
-            boolean isFreightCross = (cur == 3 && (next == 4 || next == 7)) ||
-                                     (cur == 4 && next == 3) ||
-                                     (cur == 7 && next == 3);
-            if (isFreightCross) {
-                if (passengerUsingCorridor) continue; // passenger priority
-                if (occ != null && moveSet.contains(occ)) {
-                    int occNext = getNextSectionForTrain(occ);
-                    if (occNext == cur && prio.compare(n, occ) > 0) continue; // lower priority loses
-                }
-            }
-
-            // Merge control for sections 5 & 10
-            if (next == 5 || next == 10) {
-                boolean taken = false;
-                for (Map.Entry<String, Integer> e : plan.entrySet()) {
-                    if (e.getValue() == next) {
-                        taken = true;
-                        if (prio.compare(n, e.getKey()) < 0) { // we win
-                            plan.remove(e.getKey());
-                            plan.put(n, next);
-                        }
-                        break;
-                    }
-                }
-                if (taken) continue;
-            }
-
-            // Normal move if free or chain reaction
-            boolean willFree = (occ != null && moveSet.contains(occ));
-            if (occ != null && !willFree) continue;
-            if (occ != null && moveSet.contains(occ)) {
-                int occNext = getNextSectionForTrain(occ);
-                if (occNext == cur && prio.compare(n, occ) > 0) continue;
-            }
-            plan.put(n, next);
-        }
-
-        // === Chain Reaction ===
-        boolean changed = true;
-        while (changed) {
-            changed = false;
-            for (String n : ordered) {
-                if (plan.containsKey(n)) continue;
-                Train t = trains.get(n);
-                int cur = trainLocations.get(n);
+                // Exit rule: when at destination and asked to move → leave corridor
                 if (cur == t.destination) {
-                    plan.put(n, -1);
-                    changed = true;
+                    planned.put(name, -1);
                     continue;
                 }
-                int next = getNextSectionForTrain(n);
-                if (next == -1) continue;
-                String occ = sectionOccupancy.get(next);
-                if (occ != null && plan.containsKey(occ) && plan.get(occ) != next) {
-                    plan.put(n, next);
-                    changed = true;
+
+                int nxt = nextHop(name, cur, t.path);
+                if (nxt == -1) continue;
+
+                // Availability check
+                String occ = sectionOccupancy.get(nxt);
+
+                // 1) If empty and nobody else already targeted nxt, OK
+                boolean emptyTarget = (occ == null) && !planned.containsValue(nxt);
+
+                // 2) If occupied by a train that will move elsewhere (not swapping back), OK
+                boolean occupantWillLeave = false;
+                if (occ != null && toMove.contains(occ) && planned.containsKey(occ)) {
+                    int occTarget = planned.get(occ);
+                    // forbid direct swap (occ moves to cur while we move to nxt=occ's cur)
+                    if (occTarget != cur) {
+                        // also ensure no other train already planned to nxt (double target)
+                        if (!planned.containsValue(nxt)) {
+                            occupantWillLeave = true;
+                        }
+                    }
                 }
+
+                // forbid head-on swap in same tick: if occ exists and its planned target is cur, we must NOT move
+                boolean headOnSwap =
+                        (occ != null && toMove.contains(occ) && planned.containsKey(occ) && planned.get(occ) == cur);
+
+                if (!(emptyTarget || occupantWillLeave) || headOnSwap) {
+                    continue;
+                }
+
+                // Crossing rule: ONLY block 3↔4 when passenger(s) present on 1/5/6
+                boolean isCrossing34 = (cur == 3 && nxt == 4) || (cur == 4 && nxt == 3);
+                if (isCrossing34) {
+                    if (sectionOccupancy.get(1) != null
+                            || sectionOccupancy.get(5) != null
+                            || sectionOccupancy.get(6) != null) {
+                        // blocked by passenger presence on corridor
+                        continue;
+                    }
+                }
+                // NOTE: do NOT block 7↔3 or 7↔4 moves. Only the 3↔4 segment crosses passenger lines.
+
+                planned.put(name, nxt);
             }
         }
 
-        // === Execution Phase ===
+        // Execute in deterministic order
         int moved = 0;
-        for (String n : ordered) {
-            if (!plan.containsKey(n)) continue;
-            int cur = trainLocations.get(n);
-            int next = plan.get(n);
-            sectionOccupancy.put(cur, null);
-            if (next == -1) {
-                trainLocations.remove(n);
+        for (String name : order) {
+            if (!planned.containsKey(name)) continue;
+            Integer cur = trainLocations.get(name);
+            if (cur == null) continue; // already exited
+            int target = planned.get(name);
+
+            if (target == -1) {
+                // exit
+                sectionOccupancy.put(cur, null);
+                trainLocations.remove(name);
             } else {
-                sectionOccupancy.put(next, n);
-                trainLocations.put(n, next);
+                // move
+                sectionOccupancy.put(cur, null);
+                sectionOccupancy.put(target, name);
+                trainLocations.put(name, target);
             }
             moved++;
         }
@@ -174,34 +159,43 @@ public class InterlockingImpl implements Interlocking {
     }
 
     @Override
-    public String getSection(int trackSection) {
-        if (!validSections.contains(trackSection))
-            throw new IllegalArgumentException("Invalid section");
+    public String getSection(int trackSection) throws IllegalArgumentException {
+        if (!validSections.contains(trackSection)) {
+            throw new IllegalArgumentException("Track section " + trackSection + " does not exist.");
+        }
         return sectionOccupancy.get(trackSection);
     }
 
     @Override
-    public int getTrain(String trainName) {
-        if (!trains.containsKey(trainName))
-            throw new IllegalArgumentException("Unknown train: " + trainName);
+    public int getTrain(String trainName) throws IllegalArgumentException {
+        if (!trains.containsKey(trainName)) {
+            throw new IllegalArgumentException("Train '" + trainName + "' does not exist.");
+        }
         return trainLocations.getOrDefault(trainName, -1);
     }
 
-    // === Helper Methods ===
+    // ---------- helpers ----------
+
+    private int nextHop(String trainName, int currentSection, List<Integer> path) {
+        int idx = path.indexOf(currentSection);
+        if (idx >= 0 && idx + 1 < path.size()) return path.get(idx + 1);
+        return -1;
+    }
+
     private List<Integer> findPath(int start, int end) {
         Map<Integer, List<Integer>> g = buildGraph();
+        if (!g.containsKey(start)) return Collections.emptyList();
         Queue<List<Integer>> q = new LinkedList<>();
         q.add(Collections.singletonList(start));
         Set<Integer> seen = new HashSet<>();
         seen.add(start);
         while (!q.isEmpty()) {
-            List<Integer> path = q.poll();
-            int last = path.get(path.size() - 1);
-            if (last == end) return path;
+            List<Integer> p = q.poll();
+            int last = p.get(p.size() - 1);
+            if (last == end) return p;
             for (int nb : g.getOrDefault(last, Collections.emptyList())) {
-                if (!seen.contains(nb)) {
-                    seen.add(nb);
-                    List<Integer> np = new ArrayList<>(path);
+                if (seen.add(nb)) {
+                    List<Integer> np = new ArrayList<>(p);
                     np.add(nb);
                     q.add(np);
                 }
@@ -211,42 +205,28 @@ public class InterlockingImpl implements Interlocking {
     }
 
     private Map<Integer, List<Integer>> buildGraph() {
-        Map<Integer, List<Integer>> g = new HashMap<>();
-        g.computeIfAbsent(1, k -> new ArrayList<>()).add(5);
-        g.computeIfAbsent(2, k -> new ArrayList<>()).add(5);
-        g.computeIfAbsent(5, k -> new ArrayList<>()).addAll(Arrays.asList(1, 2, 6));
-        g.computeIfAbsent(6, k -> new ArrayList<>()).addAll(Arrays.asList(5, 10));
-        g.computeIfAbsent(10, k -> new ArrayList<>()).addAll(Arrays.asList(6, 8, 9));
-        g.computeIfAbsent(8, k -> new ArrayList<>()).add(10);
-        g.computeIfAbsent(9, k -> new ArrayList<>()).add(10);
-        g.computeIfAbsent(3, k -> new ArrayList<>()).addAll(Arrays.asList(4, 7));
-        g.computeIfAbsent(4, k -> new ArrayList<>()).add(3);
-        g.computeIfAbsent(7, k -> new ArrayList<>()).addAll(Arrays.asList(3, 11));
-        g.computeIfAbsent(11, k -> new ArrayList<>()).add(7);
-        return g;
-    }
+        Map<Integer, List<Integer>> graph = new HashMap<>();
+        // Passenger corridor (bi-directional for pathfinding)
+        graph.computeIfAbsent(1, k -> new ArrayList<>()).add(5);
+        graph.computeIfAbsent(5, k -> new ArrayList<>()).addAll(Arrays.asList(1, 2, 6));
+        graph.computeIfAbsent(2, k -> new ArrayList<>()).add(5);
+        graph.computeIfAbsent(6, k -> new ArrayList<>()).addAll(Arrays.asList(5, 10));
+        graph.computeIfAbsent(10, k -> new ArrayList<>()).addAll(Arrays.asList(6, 8, 9));
+        graph.computeIfAbsent(8, k -> new ArrayList<>()).add(10);
+        graph.computeIfAbsent(9, k -> new ArrayList<>()).add(10);
 
-    private int getNextSectionForTrain(String trainName) {
-        Train tr = trains.get(trainName);
-        if (tr == null) return -1;
-        int cur = trainLocations.get(trainName);
-        int idx = tr.path.indexOf(cur);
-        if (idx != -1 && idx < tr.path.size() - 1)
-            return tr.path.get(idx + 1);
-        return -1;
-    }
-
-    private boolean isPassengerTrain(String name) {
-        Train t = trains.get(name);
-        if (t == null || t.path.isEmpty()) return false;
-        int f = t.path.get(0);
-        return Arrays.asList(1, 2, 5, 6, 8, 9, 10).contains(f);
+        // Freight Y (bi-directional for pathfinding)
+        graph.computeIfAbsent(3, k -> new ArrayList<>()).addAll(Arrays.asList(4, 7));
+        graph.computeIfAbsent(4, k -> new ArrayList<>()).add(3);
+        graph.computeIfAbsent(7, k -> new ArrayList<>()).addAll(Arrays.asList(3, 11));
+        graph.computeIfAbsent(11, k -> new ArrayList<>()).add(7);
+        return graph;
     }
 
     private boolean isFreightTrain(String name) {
         Train t = trains.get(name);
         if (t == null || t.path.isEmpty()) return false;
-        int f = t.path.get(0);
-        return Arrays.asList(3, 4, 7, 11).contains(f);
+        int first = t.path.get(0);
+        return first == 3 || first == 4 || first == 7 || first == 11;
     }
 }
