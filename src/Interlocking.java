@@ -1,5 +1,4 @@
 
-
 /**
  * Defines the public interface for a railway interlocking system.
  * This interface specifies the core functionalities for adding trains,

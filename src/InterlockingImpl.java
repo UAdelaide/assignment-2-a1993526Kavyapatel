@@ -120,7 +120,7 @@ public class InterlockingImpl implements Interlocking {
                 boolean canOccupantMove = (occupant != null && trainsInMoveCall.contains(occupant) && plannedMoves.containsKey(occupant) && !plannedMoves.containsValue(nextSection));
                 
                 if (isNextSectionFree || canOccupantMove) {
-                    // Junction Priority Check
+                    // Junction Priority Check based on assignment PDF
                     if ((currentSection == 3 && nextSection == 4) || (currentSection == 4 && nextSection == 3)) {
                          if (sectionOccupancy.get(1) != null || sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null) {
                             continue; // Blocked by passenger train.
@@ -136,7 +136,7 @@ public class InterlockingImpl implements Interlocking {
         for (String trainName : sortedTrainNames) {
             if (plannedMoves.containsKey(trainName)) {
                 int newSection = plannedMoves.get(trainName);
-                if (!trainLocations.containsKey(trainName)) continue; // Could have been removed in a previous step
+                if (!trainLocations.containsKey(trainName)) continue; 
                 int oldSection = trainLocations.get(trainName);
 
                 if (newSection == -1) { // Train exits
@@ -239,3 +239,4 @@ public class InterlockingImpl implements Interlocking {
         return Arrays.asList(3, 11, 4, 7).contains(firstSection);
     }
 }
+
