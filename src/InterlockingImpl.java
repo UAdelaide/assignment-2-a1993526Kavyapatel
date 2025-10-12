@@ -20,7 +20,6 @@ public class InterlockingImpl implements Interlocking {
         final String name;
         final int destination;
         final List<Integer> path;
-        int arrivalCount = 0;
         Train(String name, int destination, List<Integer> path) {
             this.name = name;
             this.destination = destination;
@@ -31,22 +30,19 @@ public class InterlockingImpl implements Interlocking {
     private final Map<String, Train> trains = new HashMap<>();
     private final Map<String, Integer> trainLocations = new HashMap<>();
     private final Map<Integer, String> sectionOccupancy = new HashMap<>();
-    private final Map<Integer, Integer> lastVacated = new HashMap<>();
     private final Set<Integer> validSections = new HashSet<>();
-    private int tick = 0;
 
     public InterlockingImpl() {
         for (int i = 1; i <= 11; i++) {
             validSections.add(i);
             sectionOccupancy.put(i, null);
-            lastVacated.put(i, -1);
         }
     }
 
     @Override
-    public void addTrain(String name, int entry, int dest) {
-        if (trains.containsKey(name))
-            throw new IllegalArgumentException("Duplicate train");
+    public void addTrain(String trainName, int entry, int dest) {
+        if (trains.containsKey(trainName))
+            throw new IllegalArgumentException("Duplicate train name");
         if (!validSections.contains(entry) || !validSections.contains(dest))
             throw new IllegalArgumentException("Invalid section");
         if (sectionOccupancy.get(entry) != null)
@@ -54,72 +50,46 @@ public class InterlockingImpl implements Interlocking {
         List<Integer> path = findPath(entry, dest);
         if (path.isEmpty())
             throw new IllegalArgumentException("No valid path");
-        Train t = new Train(name, dest, path);
-        trains.put(name, t);
-        trainLocations.put(name, entry);
-        sectionOccupancy.put(entry, name);
+        Train t = new Train(trainName, dest, path);
+        trains.put(trainName, t);
+        trainLocations.put(trainName, entry);
+        sectionOccupancy.put(entry, trainName);
     }
 
     @Override
     public int moveTrains(String... names) {
-        tick++;
         Set<String> moveSet = new HashSet<>(Arrays.asList(names));
         for (String n : moveSet)
             if (!trains.containsKey(n))
                 throw new IllegalArgumentException("No train: " + n);
 
         Map<String, Integer> plan = new HashMap<>();
+
         List<String> ordered = moveSet.stream()
                 .filter(trainLocations::containsKey)
                 .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(n -> n))
                 .collect(Collectors.toList());
 
-        int lastCount = -1;
-        while (plan.size() > lastCount) {
-            lastCount = plan.size();
-            for (String n : ordered) {
-                if (plan.containsKey(n)) continue;
-                if (!trainLocations.containsKey(n)) continue;
-                Train t = trains.get(n);
-                int cur = trainLocations.get(n);
+        for (String n : ordered) {
+            Train t = trains.get(n);
+            int cur = trainLocations.get(n);
 
-                // one-cycle linger at destination or section 10
-                if (cur == t.destination || cur == 10) {
-                    if (t.arrivalCount == 0) { t.arrivalCount++; continue; }
-                    plan.put(n, -1);
-                    continue;
-                }
+            if (cur == t.destination) {
+                plan.put(n, -1);
+                continue;
+            }
 
-                int next = getNextSectionForTrain(n);
-                if (next == -1) continue;
-                String occ = sectionOccupancy.get(next);
+            int next = getNextSectionForTrain(n);
+            if (next == -1) continue;
 
-                // cooldown shortened to 1 tick
-                if (tick - lastVacated.getOrDefault(next, -1) < 1) continue;
-                if (plan.containsValue(next)) continue;
-                if (occ != null && plan.containsKey(occ) && plan.get(occ) == cur) continue;
-
-                boolean free = (occ == null) || (moveSet.contains(occ) && plan.containsKey(occ));
-                if (!free) continue;
-
-                // 3↔4 freight junction restriction
+            String occ = sectionOccupancy.get(next);
+            if (occ == null) {
+                // passenger always moves first
                 if ((cur == 3 && next == 4) || (cur == 4 && next == 3)) {
-                    if (plan.values().contains(cur)) continue;
-                    if (tick - Math.max(lastVacated.get(3), lastVacated.get(4)) < 1)
+                    if (isFreightTrain(n) &&
+                        (sectionOccupancy.get(1) != null || sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null))
                         continue;
                 }
-
-                // 2-5-6 merge rule
-                if ((cur == 5 && next == 6) || (cur == 2 && next == 5)) {
-                    if (tick - Math.max(lastVacated.get(5), lastVacated.get(6)) < 1)
-                        continue;
-                }
-
-                // 8/9→10 merge rule
-                if ((cur == 8 || cur == 9) && next == 10) {
-                    if (tick - lastVacated.get(10) < 1) continue;
-                }
-
                 plan.put(n, next);
             }
         }
@@ -130,7 +100,6 @@ public class InterlockingImpl implements Interlocking {
             int cur = trainLocations.get(n);
             int next = plan.get(n);
             sectionOccupancy.put(cur, null);
-            lastVacated.put(cur, tick);
             if (next == -1) {
                 trainLocations.remove(n);
             } else {
@@ -140,22 +109,6 @@ public class InterlockingImpl implements Interlocking {
             moved++;
         }
 
-        if (moved == 0) {
-            for (String n : ordered) {
-                if (isFreightTrain(n)) {
-                    int cur = trainLocations.get(n);
-                    int next = getNextSectionForTrain(n);
-                    if (next != -1 && sectionOccupancy.get(next) == null) {
-                        sectionOccupancy.put(cur, null);
-                        lastVacated.put(cur, tick);
-                        sectionOccupancy.put(next, n);
-                        trainLocations.put(n, next);
-                        moved++;
-                        break;
-                    }
-                }
-            }
-        }
         return moved;
     }
 
