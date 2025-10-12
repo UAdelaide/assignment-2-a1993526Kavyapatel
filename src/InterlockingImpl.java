@@ -20,6 +20,8 @@ public class InterlockingImpl implements Interlocking {
         final String name;
         final int destination;
         final List<Integer> path;
+        boolean arrived = false;
+
         Train(String name, int destination, List<Integer> path) {
             this.name = name;
             this.destination = destination;
@@ -64,36 +66,83 @@ public class InterlockingImpl implements Interlocking {
                 throw new IllegalArgumentException("No train: " + n);
 
         Map<String, Integer> plan = new HashMap<>();
-
         List<String> ordered = moveSet.stream()
                 .filter(trainLocations::containsKey)
                 .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(n -> n))
                 .collect(Collectors.toList());
 
+        // Determine planned moves
         for (String n : ordered) {
             Train t = trains.get(n);
             int cur = trainLocations.get(n);
 
+            // Destination linger: wait one tick before removal
             if (cur == t.destination) {
-                plan.put(n, -1);
-                continue;
+                if (!t.arrived) {
+                    t.arrived = true;
+                    continue;
+                } else {
+                    plan.put(n, -1);
+                    continue;
+                }
             }
 
             int next = getNextSectionForTrain(n);
             if (next == -1) continue;
 
-            String occ = sectionOccupancy.get(next);
-            if (occ == null) {
-                // passenger always moves first
-                if ((cur == 3 && next == 4) || (cur == 4 && next == 3)) {
-                    if (isFreightTrain(n) &&
-                        (sectionOccupancy.get(1) != null || sectionOccupancy.get(5) != null || sectionOccupancy.get(6) != null))
-                        continue;
+            // Relaxed freight junction 3<->4 rule
+            if ((cur == 3 && next == 4) || (cur == 4 && next == 3)) {
+                boolean blocking = false;
+
+                // Both occupied or both targeting each other?
+                if ((sectionOccupancy.get(3) != null && sectionOccupancy.get(4) != null) ||
+                    (sectionOccupancy.get(3) != null && getNextSectionForTrain(sectionOccupancy.get(3)) == 4) ||
+                    (sectionOccupancy.get(4) != null && getNextSectionForTrain(sectionOccupancy.get(4)) == 3)) {
+                    blocking = true;
                 }
+
+                // If passenger line active near 1/5/6, give priority to passenger
+                if (isFreightTrain(n) && (
+                        sectionOccupancy.get(1) != null ||
+                        sectionOccupancy.get(5) != null ||
+                        sectionOccupancy.get(6) != null)) {
+                    blocking = true;
+                }
+
+                if (blocking) continue;
+            }
+
+            // Determine if section will be free this tick
+            String occ = sectionOccupancy.get(next);
+            boolean willBeFreed = occ != null && moveSet.contains(occ)
+                    && getNextSectionForTrain(occ) != -1
+                    && getNextSectionForTrain(occ) != next;
+
+            if (occ == null || willBeFreed) {
                 plan.put(n, next);
             }
         }
 
+        // Resolve same-target conflicts (choose smaller current section)
+        Map<Integer, List<String>> conflictMap = new HashMap<>();
+        for (Map.Entry<String, Integer> e : plan.entrySet()) {
+            if (e.getValue() == -1) continue;
+            conflictMap.computeIfAbsent(e.getValue(), k -> new ArrayList<>()).add(e.getKey());
+        }
+
+        for (Map.Entry<Integer, List<String>> entry : conflictMap.entrySet()) {
+            List<String> claimers = entry.getValue();
+            if (claimers.size() > 1) {
+                String winner = claimers.stream()
+                        .min(Comparator.comparingInt(trainLocations::get))
+                        .orElse(claimers.get(0));
+                for (String other : claimers)
+                    if (!other.equals(winner))
+                        plan.remove(other);
+            }
+        }
+
+        // Execute movements
         int moved = 0;
         for (String n : ordered) {
             if (!plan.containsKey(n)) continue;
