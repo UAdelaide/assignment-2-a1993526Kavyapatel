@@ -99,11 +99,17 @@ public class InterlockingImpl implements Interlocking {
             if (start.get(tgt) != null) continue;
             if (occupancy.get(tgt) != null) continue;
 
-            // Prevent two trains from entering opposite shared junctions at same tick
-            boolean junctionConflict = allowed.stream().anyMatch(x -> {
-                int xtgt = moveReq.get(x);
-                return sharedZones.contains(xtgt) && sharedZones.contains(tgt);
-            });
+            // === Direction-aware shared junction conflict check ===
+            boolean junctionConflict = false;
+            for (String other : allowed) {
+                int xtgt = moveReq.get(other);
+                int xcur = locations.get(other);
+                boolean sameDirection = (xcur < xtgt && cur < tgt) || (xcur > xtgt && cur > tgt);
+                if (sharedZones.contains(xtgt) && sharedZones.contains(tgt) && !sameDirection) {
+                    junctionConflict = true;
+                    break;
+                }
+            }
             if (junctionConflict) continue;
 
             // Prevent freight 3<->4 crossing when passenger active
@@ -140,7 +146,6 @@ public class InterlockingImpl implements Interlocking {
             locations.put(n, tgt);
             moved++;
 
-            // mark junctions for cooldown AFTER movement
             if (Arrays.asList(5, 6, 10).contains(tgt) || Arrays.asList(5, 6, 10).contains(cur))
                 cooldown.add(tgt);
         }
@@ -148,7 +153,7 @@ public class InterlockingImpl implements Interlocking {
         // === NEW FIX: Deferred movement into newly freed sections ===
         if (!freed.isEmpty()) {
             for (String n : moveReq.keySet()) {
-                if (allowed.contains(n)) continue; // already moved
+                if (allowed.contains(n)) continue;
                 if (!locations.containsKey(n)) continue;
                 int cur = locations.get(n);
                 int next = moveReq.get(n);
