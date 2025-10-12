@@ -71,7 +71,7 @@ public class InterlockingImpl implements Interlocking {
             }
         }
 
-        // Find conflicts
+        // Detect conflicts
         Map<Integer, List<String>> inv = new HashMap<>();
         for (var e : moveReq.entrySet())
             inv.computeIfAbsent(e.getValue(), k -> new ArrayList<>()).add(e.getKey());
@@ -80,24 +80,24 @@ public class InterlockingImpl implements Interlocking {
                 .map(Map.Entry::getKey)
                 .collect(Collectors.toSet());
 
-        // === FILTER ALLOWED MOVES (shared-zone aware) ===
+        // === FILTER ALLOWED MOVES ===
         Set<String> allowed = new HashSet<>();
         Set<Integer> sharedZones = new HashSet<>(Arrays.asList(5, 6, 10));
 
-        // classify move priority
+        // Priority rules
         java.util.function.Function<String, Integer> movePriority = n -> {
             int tgt = moveReq.get(n);
             int cur = locations.get(n);
             boolean curShared = sharedZones.contains(cur);
             boolean tgtShared = sharedZones.contains(tgt);
-            if (tgtShared && !curShared && (tgt == 5 || tgt == 10)) return 0; // enter bottleneck
-            if (curShared || tgt == 6) return 1;                               // traverse/exit bottleneck
+            if (tgtShared && !curShared && (tgt == 5 || tgt == 10)) return 0; // enter shared
+            if (curShared || tgt == 6) return 1; // exit shared
             return 2;
         };
 
         Comparator<String> prioThenType = Comparator
                 .comparing(movePriority)
-                .thenComparing((String n) -> isFreight(n))   // passengers first
+                .thenComparing((String n) -> isFreight(n))
                 .thenComparing(n -> n);
 
         Set<Integer> busyShared = new HashSet<>();
@@ -118,7 +118,7 @@ public class InterlockingImpl implements Interlocking {
                 }
             }
 
-            // 3 <-> 4 restriction when passenger activity present
+            // 3 <-> 4 restriction (freight block)
             if ((cur == 3 && tgt == 4) || (cur == 4 && tgt == 3)) {
                 boolean passengerBlocksFreight34 =
                         (start.get(1) != null) || (start.get(5) != null) || (start.get(6) != null);
@@ -132,20 +132,9 @@ public class InterlockingImpl implements Interlocking {
             }
         }
 
-        // === NEW: One-tick cooldown for 6 and 10 ===
-        Set<Integer> mustCooldown = Set.of(6, 10);
-        allowed.removeIf(n -> {
-            int cur = locations.get(n);
-            int tgt = moveReq.get(n);
-            return mustCooldown.contains(tgt)
-                    && start.get(tgt) == null
-                    && occupancy.get(tgt) == null;
-        });
-
         // === EXECUTION PHASE ===
         int moved = 0;
-        Set<Integer> freed = new HashSet<>();
-        Set<Integer> cooldown = new HashSet<>();
+        Set<Integer> justFreed = new HashSet<>();
 
         // Handle exits first
         for (String n : exitReq.keySet().stream().sorted().collect(Collectors.toList())) {
@@ -153,7 +142,7 @@ public class InterlockingImpl implements Interlocking {
             int cur = locations.get(n);
             occupancy.put(cur, null);
             locations.remove(n);
-            freed.add(cur);
+            justFreed.add(cur);
             moved++;
         }
 
@@ -162,18 +151,19 @@ public class InterlockingImpl implements Interlocking {
             if (!locations.containsKey(n)) continue;
             int cur = locations.get(n);
             int tgt = moveReq.get(n);
+
+            // cooldown rule: block entering 6/10 if just vacated this tick
+            if ((tgt == 6 || tgt == 10) && justFreed.contains(tgt)) continue;
+
             if (occupancy.get(tgt) != null) continue;
 
             occupancy.put(cur, null);
             occupancy.put(tgt, n);
             locations.put(n, tgt);
+            justFreed.add(cur);
             moved++;
-
-            if (Arrays.asList(5, 6, 10).contains(tgt) || Arrays.asList(5, 6, 10).contains(cur))
-                cooldown.add(tgt);
         }
 
-        cooldown.addAll(freed);
         return moved;
     }
 
