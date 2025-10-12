@@ -1,13 +1,7 @@
 import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * Final version - Dhruvit Desai
- * ✅ Fixes zero-move issue
- * ✅ Adds shared zone logic for junctions (3,4,5,6,10)
- * ✅ Ensures passenger priority and no collisions
- * ✅ High test coverage and deterministic order
- */
+
 public class InterlockingImpl implements Interlocking {
 
     private static class Train {
