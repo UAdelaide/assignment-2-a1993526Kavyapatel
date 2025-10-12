@@ -62,6 +62,7 @@ public class InterlockingImpl implements Interlocking {
         }
 
         Map<String, Integer> plannedMoves = new HashMap<>();
+        
         List<String> sortedTrainNames = trainsInMoveCall.stream()
                 .filter(trainLocations::containsKey)
                 .sorted(Comparator.comparing(this::isFreightTrain).thenComparing(name -> name))
@@ -71,7 +72,6 @@ public class InterlockingImpl implements Interlocking {
         while (plannedMoves.size() > lastIterationPlannedCount) {
             lastIterationPlannedCount = plannedMoves.size();
             
-            // Step 1: Identify all potential moves for trains not yet planned
             Map<String, Integer> potentialMoves = new HashMap<>();
             for (String trainName : sortedTrainNames) {
                 if (plannedMoves.containsKey(trainName)) continue;
@@ -104,33 +104,28 @@ public class InterlockingImpl implements Interlocking {
                 }
             }
             
-            // Step 2: Group potential moves by their target section to find conflicts
             Map<Integer, List<String>> claims = new HashMap<>();
             for (Map.Entry<String, Integer> entry : potentialMoves.entrySet()) {
                 claims.computeIfAbsent(entry.getValue(), k -> new ArrayList<>()).add(entry.getKey());
             }
 
-            // Step 3: Resolve conflicts and confirm moves
             for (Map.Entry<Integer, List<String>> entry : claims.entrySet()) {
                 int targetSection = entry.getKey();
                 List<String> claimants = entry.getValue();
 
                 if (claimants.size() == 1) {
-                    // Uncontested claim, confirm it.
                     plannedMoves.put(claimants.get(0), targetSection);
                 } else {
-                    // Contested claim, find the winner based on the deterministic sort order.
                     for (String trainName : sortedTrainNames) {
-                        if (claimants.contains(trainName)) {
+                        if (claimants.contains(trainName) && !plannedMoves.containsKey(trainName)) {
                             plannedMoves.put(trainName, targetSection);
-                            break; // The first train in the master sorted list wins the tie-break.
+                            break; 
                         }
                     }
                 }
             }
         }
 
-        // --- Execution Phase ---
         int movedCount = 0;
         for (String trainName : sortedTrainNames) {
             if (plannedMoves.containsKey(trainName)) {
@@ -138,11 +133,11 @@ public class InterlockingImpl implements Interlocking {
                 if (!trainLocations.containsKey(trainName)) continue; 
                 int oldSection = trainLocations.get(trainName);
 
-                if (newSection == -1) { // Train exits
+                if (newSection == -1) {
                     sectionOccupancy.put(oldSection, null);
                     trainLocations.remove(trainName);
                     trains.get(trainName).markedForExit = false;
-                } else { // Train moves
+                } else {
                     sectionOccupancy.put(oldSection, null);
                     sectionOccupancy.put(newSection, trainName);
                     trainLocations.put(trainName, newSection);
@@ -169,7 +164,6 @@ public class InterlockingImpl implements Interlocking {
         return trainLocations.getOrDefault(trainName, -1);
     }
 
-    // --- Helper Methods ---
     private List<Integer> findPath(int start, int end) {
         Map<Integer, List<Integer>> fullGraph = buildFullGraph();
         if (!fullGraph.containsKey(start)) return Collections.emptyList();
