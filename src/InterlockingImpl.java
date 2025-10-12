@@ -122,7 +122,6 @@ public class InterlockingImpl implements Interlocking {
         // === EXECUTION PHASE ===
         int moved = 0;
         Set<Integer> freed = new HashSet<>();
-        Set<Integer> cooldown = new HashSet<>();
 
         // Handle exits first
         for (String n : exitReq.keySet().stream().sorted().collect(Collectors.toList())) {
@@ -145,28 +144,33 @@ public class InterlockingImpl implements Interlocking {
             occupancy.put(tgt, n);
             locations.put(n, tgt);
             moved++;
-
-            if (Arrays.asList(5, 6, 10).contains(tgt) || Arrays.asList(5, 6, 10).contains(cur))
-                cooldown.add(tgt);
+            freed.add(cur);
         }
 
-        // === NEW FIX: Deferred movement into newly freed sections ===
-        if (!freed.isEmpty()) {
+        // === IMPROVED CASCADE FIX: keep moving until no trains can advance ===
+        boolean movedThisRound;
+        do {
+            movedThisRound = false;
+            Set<Integer> newlyFreed = new HashSet<>();
+
             for (String n : moveReq.keySet()) {
                 if (allowed.contains(n)) continue;
                 if (!locations.containsKey(n)) continue;
+
                 int cur = locations.get(n);
                 int next = moveReq.get(n);
-                if (freed.contains(next) && occupancy.get(next) == null) {
+                if (occupancy.get(next) == null) {
                     occupancy.put(cur, null);
                     occupancy.put(next, n);
                     locations.put(n, next);
                     moved++;
+                    newlyFreed.add(cur);
+                    movedThisRound = true;
                 }
             }
-        }
+            freed.addAll(newlyFreed);
+        } while (movedThisRound);
 
-        cooldown.addAll(freed);
         return moved;
     }
 
