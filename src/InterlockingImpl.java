@@ -1,7 +1,10 @@
 import java.util.*;
 import java.util.stream.Collectors;
 
-/
+/**
+ * Final tuned version — deterministic, safe, and balanced.
+ * Fixes over-blocking of freight trains while keeping passenger priority.
+ */
 public class InterlockingImpl implements Interlocking {
 
     private static class Train {
@@ -31,16 +34,20 @@ public class InterlockingImpl implements Interlocking {
 
     @Override
     public void addTrain(String trainName, int entry, int dest) {
-        if (trains.containsKey(trainName))
+        if (trains.containsKey(trainName)) {
             throw new IllegalArgumentException("Duplicate train name");
-        if (!validSections.contains(entry) || !validSections.contains(dest))
+        }
+        if (!validSections.contains(entry) || !validSections.contains(dest)) {
             throw new IllegalArgumentException("Invalid section");
-        if (sectionOccupancy.get(entry) != null)
+        }
+        if (sectionOccupancy.get(entry) != null) {
             throw new IllegalStateException("Section occupied");
+        }
 
         List<Integer> path = findPath(entry, dest);
-        if (path.isEmpty())
+        if (path.isEmpty()) {
             throw new IllegalArgumentException("No valid path");
+        }
 
         Train t = new Train(trainName, dest, path);
         trains.put(trainName, t);
@@ -51,9 +58,11 @@ public class InterlockingImpl implements Interlocking {
     @Override
     public int moveTrains(String... names) {
         Set<String> moveSet = new HashSet<>(Arrays.asList(names));
-        for (String n : moveSet)
-            if (!trains.containsKey(n))
+        for (String n : moveSet) {
+            if (!trains.containsKey(n)) {
                 throw new IllegalArgumentException("No train: " + n);
+            }
+        }
 
         Map<String, Integer> plan = new HashMap<>();
 
@@ -100,13 +109,12 @@ public class InterlockingImpl implements Interlocking {
             if ((cur == 3 && next == 4) || (cur == 4 && next == 3) ||
                 (cur == 7 && next == 3) || (cur == 3 && next == 7)) {
 
-                //  Balanced blocking — only check 5 & 6 (main junction)
+                // ✅ Balanced blocking — only check 5 & 6 (main junction)
                 boolean passengerActive =
                         (sectionOccupancy.get(5) != null) ||
                         (sectionOccupancy.get(6) != null);
 
-                if (passengerActive)
-                    continue;
+                if (passengerActive) continue;
 
                 // allow freight if the opposing direction just cleared
                 String opp3 = sectionOccupancy.get(3);
@@ -118,8 +126,7 @@ public class InterlockingImpl implements Interlocking {
                         (opp4 != null && getNextSectionForTrain(opp4) == next) ||
                         (opp7 != null && getNextSectionForTrain(opp7) == next);
 
-                if (blockedByOpposite)
-                    continue;
+                if (blockedByOpposite) continue;
             }
 
             // --- Normal occupancy or planned free section ---
@@ -127,8 +134,9 @@ public class InterlockingImpl implements Interlocking {
                     && getNextSectionForTrain(occ) != -1
                     && getNextSectionForTrain(occ) != next;
 
-            if (occ == null || willFree)
+            if (occ == null || willFree) {
                 plan.put(n, next);
+            }
         }
 
         // === Conflict resolution ===
@@ -144,9 +152,11 @@ public class InterlockingImpl implements Interlocking {
                 String winner = claimers.stream()
                         .min(Comparator.comparingInt(trainLocations::get))
                         .orElse(claimers.get(0));
-                for (String loser : claimers)
-                    if (!loser.equals(winner))
+                for (String loser : claimers) {
+                    if (!loser.equals(winner)) {
                         plan.remove(loser);
+                    }
+                }
             }
         }
 
@@ -171,15 +181,17 @@ public class InterlockingImpl implements Interlocking {
 
     @Override
     public String getSection(int s) {
-        if (!validSections.contains(s))
+        if (!validSections.contains(s)) {
             throw new IllegalArgumentException("Invalid section");
+        }
         return sectionOccupancy.get(s);
     }
 
     @Override
     public int getTrain(String n) {
-        if (!trains.containsKey(n))
+        if (!trains.containsKey(n)) {
             throw new IllegalArgumentException("No train: " + n);
+        }
         return trainLocations.getOrDefault(n, -1);
     }
 
@@ -226,8 +238,9 @@ public class InterlockingImpl implements Interlocking {
         if (tr == null) return -1;
         int cur = trainLocations.get(t);
         int i = tr.path.indexOf(cur);
-        if (i != -1 && i < tr.path.size() - 1)
+        if (i != -1 && i < tr.path.size() - 1) {
             return tr.path.get(i + 1);
+        }
         return -1;
     }
 
