@@ -3,7 +3,7 @@ import java.util.stream.Collectors;
 
 /**
  * Final tuned version — deterministic, safe, and balanced.
- * Fixes over-blocking of freight trains while keeping passenger priority.
+ * Adds chain-reaction move handling for multi-train progress.
  */
 public class InterlockingImpl implements Interlocking {
 
@@ -109,14 +109,12 @@ public class InterlockingImpl implements Interlocking {
             if ((cur == 3 && next == 4) || (cur == 4 && next == 3) ||
                 (cur == 7 && next == 3) || (cur == 3 && next == 7)) {
 
-                // ✅ Balanced blocking — only check 5 & 6 (main junction)
                 boolean passengerActive =
                         (sectionOccupancy.get(5) != null) ||
                         (sectionOccupancy.get(6) != null);
 
                 if (passengerActive) continue;
 
-                // allow freight if the opposing direction just cleared
                 String opp3 = sectionOccupancy.get(3);
                 String opp4 = sectionOccupancy.get(4);
                 String opp7 = sectionOccupancy.get(7);
@@ -129,7 +127,6 @@ public class InterlockingImpl implements Interlocking {
                 if (blockedByOpposite) continue;
             }
 
-            // --- Normal occupancy or planned free section ---
             boolean willFree = occ != null && moveSet.contains(occ)
                     && getNextSectionForTrain(occ) != -1
                     && getNextSectionForTrain(occ) != next;
@@ -139,7 +136,24 @@ public class InterlockingImpl implements Interlocking {
             }
         }
 
-        // === Conflict resolution ===
+        // === Chain Reaction Phase ===
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (String tn : ordered) {
+                if (plan.containsKey(tn)) continue;
+                int cur = trainLocations.get(tn);
+                int next = getNextSectionForTrain(tn);
+                if (next == -1) continue;
+                String occ = sectionOccupancy.get(next);
+                if (occ != null && plan.containsKey(occ) && plan.get(occ) != next) {
+                    plan.put(tn, next);
+                    changed = true;
+                }
+            }
+        }
+
+        // === Conflict Resolution ===
         Map<Integer, List<String>> conflicts = new HashMap<>();
         for (Map.Entry<String, Integer> e : plan.entrySet()) {
             if (e.getValue() == -1) continue;
