@@ -8,233 +8,193 @@ public class InterlockingImpl implements Interlocking {
         final int destination;
         final List<Integer> path;
 
-        Train(String n, int d, List<Integer> p) {
-            name = n;
-            destination = d;
-            path = p;
+        Train(String name, int destination, List<Integer> path) {
+            this.name = name;
+            this.destination = destination;
+            this.path = path;
         }
     }
 
     private final Map<String, Train> trains = new HashMap<>();
-    private final Map<String, Integer> locations = new HashMap<>();
-    private final Map<Integer, String> occupancy = new HashMap<>();
-    private final Set<Integer> valid = new HashSet<>();
+    private final Map<String, Integer> trainLocations = new HashMap<>();
+    private final Map<Integer, String> sectionOccupancy = new HashMap<>();
+    private final Set<Integer> validSections = new HashSet<>();
 
     public InterlockingImpl() {
         for (int i = 1; i <= 11; i++) {
-            valid.add(i);
-            occupancy.put(i, null);
+            validSections.add(i);
+            sectionOccupancy.put(i, null);
         }
     }
 
     @Override
-    public void addTrain(String name, int entry, int dest)
+    public void addTrain(String trainName, int entryTrackSection, int destinationTrackSection)
             throws IllegalArgumentException, IllegalStateException {
-        if (trains.containsKey(name))
-            throw new IllegalArgumentException("Train name already exists");
-        if (!valid.contains(entry) || !valid.contains(dest))
-            throw new IllegalArgumentException("Invalid entry or destination");
-        if (occupancy.get(entry) != null)
-            throw new IllegalStateException("Entry section occupied");
-
-        List<Integer> path = findPath(entry, dest);
-        if (path.isEmpty())
-            throw new IllegalArgumentException("No valid path from " + entry + " to " + dest);
-
-        Train t = new Train(name, dest, path);
-        trains.put(name, t);
-        locations.put(name, entry);
-        occupancy.put(entry, name);
+        if (trainName == null) throw new IllegalArgumentException("Train name is null.");
+        if (trains.containsKey(trainName)) {
+            throw new IllegalArgumentException("Train name '" + trainName + "' is already in use.");
+        }
+        if (!validSections.contains(entryTrackSection) || !validSections.contains(destinationTrackSection)) {
+            throw new IllegalArgumentException("Invalid entry or destination track section.");
+        }
+        if (sectionOccupancy.get(entryTrackSection) != null) {
+            throw new IllegalStateException("Entry track section " + entryTrackSection + " is already occupied.");
+        }
+        List<Integer> path = findPath(entryTrackSection, destinationTrackSection);
+        if (path.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "No valid path from entry " + entryTrackSection + " to destination " + destinationTrackSection);
+        }
+        Train t = new Train(trainName, destinationTrackSection, path);
+        trains.put(trainName, t);
+        trainLocations.put(trainName, entryTrackSection);
+        sectionOccupancy.put(entryTrackSection, trainName);
     }
 
     @Override
     public int moveTrains(String... trainNames) throws IllegalArgumentException {
-        Set<String> moveSet = new HashSet<>(Arrays.asList(trainNames));
-        for (String n : moveSet)
-            if (!trains.containsKey(n))
-                throw new IllegalArgumentException("Train " + n + " not found");
-
-        // Snapshot at tick start
-        Map<Integer, String> start = new HashMap<>(occupancy);
-
-        // Build requests
-        Map<String, Integer> moveReq = new HashMap<>();
-        Map<String, Integer> exitReq = new HashMap<>();
-        for (String n : moveSet) {
-            if (!locations.containsKey(n)) continue;
-            Train t = trains.get(n);
-            int cur = locations.get(n);
-            if (cur == t.destination) {
-                exitReq.put(n, -1); // exit this tick
-            } else {
-                int nxt = getNext(n);
-                if (nxt != -1) moveReq.put(n, nxt);
-            }
+        if (trainNames == null) trainNames = new String[0];
+        // Validate
+        Set<String> toMove = new HashSet<>(Arrays.asList(trainNames));
+        for (String n : toMove) {
+            if (!trains.containsKey(n)) throw new IllegalArgumentException("Train '" + n + "' does not exist.");
         }
 
-        // Conflicts (multiple aiming at same target)
-        Map<Integer, List<String>> inv = new HashMap<>();
-        for (var e : moveReq.entrySet())
-            inv.computeIfAbsent(e.getValue(), k -> new ArrayList<>()).add(e.getKey());
-        Set<Integer> conflicted = inv.entrySet().stream()
-                .filter(e -> e.getValue().size() > 1)
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toSet());
-
-        // Shared junction
-        final Set<Integer> SHARED = Set.of(3, 4, 5, 6, 10);
-
-        // Prioritization:
-        // 0: leaving shared, 1: inside shared, 2: entering shared, 3: others
+        // Deterministic priority: passenger first (false < true), then by name
         Comparator<String> priority = Comparator
-                .comparingInt((String n) -> {
-                    int cur = locations.get(n);
-                    int tgt = moveReq.get(n);
-                    boolean curS = SHARED.contains(cur);
-                    boolean tgtS = SHARED.contains(tgt);
-                    if (curS && !tgtS) return 0;
-                    if (curS && tgtS)  return 1;
-                    if (!curS && tgtS) return 2;
-                    return 3;
-                })
-                .thenComparing(n -> isFreight(n))   // passenger before freight
-                .thenComparing(n -> n);             // stable by name
+                .comparing((String n) -> isFreightTrain(n)) // passenger=false first
+                .thenComparing(n -> n);
 
-        boolean passengerBlocksFreight34 =
-                (start.get(1) != null) || (start.get(5) != null) || (start.get(6) != null);
+        List<String> order = toMove.stream()
+                .filter(trainLocations::containsKey) // still on corridor
+                .sorted(priority)
+                .collect(Collectors.toList());
 
-        // ===== FIRST-WAVE allowed moves =====
-        Set<String> allowed = new HashSet<>();
-        for (String n : moveReq.keySet().stream().sorted(priority).collect(Collectors.toList())) {
-            int tgt = moveReq.get(n);
-            int cur = locations.get(n);
+        Map<String, Integer> planned = new HashMap<>();
 
-            if (conflicted.contains(tgt)) continue;      // target race
-            if (start.get(tgt) != null) continue;         // occupied at tick start
-            if (occupancy.get(tgt) != null) continue;     // still occupied now
+        // Iteratively plan moves until no new plans can be added
+        int lastPlanned = -1;
+        while (planned.size() > lastPlanned) {
+            lastPlanned = planned.size();
 
-            // Direction-aware: block opposite flows into shared in the same tick
-            boolean junctionConflict = false;
-            for (String a : allowed) {
-                int atgt = moveReq.get(a);
-                int acur = locations.get(a);
-                boolean bothSharedTargets = SHARED.contains(atgt) && SHARED.contains(tgt);
-                boolean sameDir = (acur < atgt && cur < tgt) || (acur > atgt && cur > tgt);
-                if (bothSharedTargets && !sameDir) {
-                    junctionConflict = true; break;
+            for (String name : order) {
+                if (planned.containsKey(name)) continue;
+                Integer cur = trainLocations.get(name);
+                if (cur == null) continue; // already exited earlier in planning
+                Train t = trains.get(name);
+
+                // Exit rule: when at destination and asked to move → leave corridor
+                if (cur == t.destination) {
+                    planned.put(name, -1);
+                    continue;
                 }
-            }
-            if (junctionConflict) continue;
 
-            // Freight 3<->4 blocked while passenger active at 1/5/6
-            if ((cur == 3 && tgt == 4) || (cur == 4 && tgt == 3)) {
-                if (passengerBlocksFreight34) continue;
-            }
+                int nxt = nextHop(name, cur, t.path);
+                if (nxt == -1) continue;
 
-            allowed.add(n);
+                // Availability check
+                String occ = sectionOccupancy.get(nxt);
+
+                // 1) If empty and nobody else already targeted nxt, OK
+                boolean emptyTarget = (occ == null) && !planned.containsValue(nxt);
+
+                // 2) If occupied by a train that will move elsewhere (not swapping back), OK
+                boolean occupantWillLeave = false;
+                if (occ != null && toMove.contains(occ) && planned.containsKey(occ)) {
+                    int occTarget = planned.get(occ);
+                    // forbid direct swap (occ moves to cur while we move to nxt=occ's cur)
+                    if (occTarget != cur) {
+                        // also ensure no other train already planned to nxt (double target)
+                        if (!planned.containsValue(nxt)) {
+                            occupantWillLeave = true;
+                        }
+                    }
+                }
+
+                // forbid head-on swap in same tick: if occ exists and its planned target is cur, we must NOT move
+                boolean headOnSwap =
+                        (occ != null && toMove.contains(occ) && planned.containsKey(occ) && planned.get(occ) == cur);
+
+                if (!(emptyTarget || occupantWillLeave) || headOnSwap) {
+                    continue;
+                }
+
+                // Crossing rule: ONLY block 3↔4 when passenger(s) present on 1/5/6
+                boolean isCrossing34 = (cur == 3 && nxt == 4) || (cur == 4 && nxt == 3);
+                if (isCrossing34) {
+                    if (sectionOccupancy.get(1) != null
+                            || sectionOccupancy.get(5) != null
+                            || sectionOccupancy.get(6) != null) {
+                        // blocked by passenger presence on corridor
+                        continue;
+                    }
+                }
+                // NOTE: do NOT block 7↔3 or 7↔4 moves. Only the 3↔4 segment crosses passenger lines.
+
+                planned.put(name, nxt);
+            }
         }
 
-        // ===== EXECUTE: exits then allowed moves =====
+        // Execute in deterministic order
         int moved = 0;
+        for (String name : order) {
+            if (!planned.containsKey(name)) continue;
+            Integer cur = trainLocations.get(name);
+            if (cur == null) continue; // already exited
+            int target = planned.get(name);
 
-        // Track *how* sections were freed this tick
-        Set<Integer> freedByExit = new HashSet<>();
-        Set<Integer> freedByMove = new HashSet<>();
-
-        // exits
-        for (String n : exitReq.keySet().stream().sorted().collect(Collectors.toList())) {
-            if (!locations.containsKey(n)) continue;
-            int cur = locations.get(n);
-            occupancy.put(cur, null);
-            locations.remove(n);
-            freedByExit.add(cur);
+            if (target == -1) {
+                // exit
+                sectionOccupancy.put(cur, null);
+                trainLocations.remove(name);
+            } else {
+                // move
+                sectionOccupancy.put(cur, null);
+                sectionOccupancy.put(target, name);
+                trainLocations.put(name, target);
+            }
             moved++;
         }
-
-        // first-wave moves
-        for (String n : allowed.stream().sorted(priority).collect(Collectors.toList())) {
-            if (!locations.containsKey(n)) continue;
-            int cur = locations.get(n);
-            int tgt = moveReq.get(n);
-            if (occupancy.get(tgt) != null) continue;
-
-            occupancy.put(cur, null);
-            occupancy.put(tgt, n);
-            locations.put(n, tgt);
-            freedByMove.add(cur);
-            moved++;
-        }
-
-        // ===== STRICT CASCADE =====
-        // - you can move only into a section freed *this tick*
-        // - you may **not** enter SHARED in cascade UNLESS that shared section was freed by an **EXIT** this tick
-        boolean changed;
-        do {
-            changed = false;
-            Set<Integer> newlyFreedByMove = new HashSet<>();
-
-            for (String n : moveReq.keySet()) {
-                if (allowed.contains(n)) continue;        // already moved
-                if (!locations.containsKey(n)) continue;  // maybe exited
-                int cur = locations.get(n);
-                int nxt = moveReq.get(n);
-
-                boolean wasFreedThisTick = freedByExit.contains(nxt) || freedByMove.contains(nxt);
-                if (!wasFreedThisTick) continue;
-
-                boolean curS = SHARED.contains(cur);
-                boolean nxtS = SHARED.contains(nxt);
-
-                // entering shared in cascade is allowed ONLY if target was freed by EXIT
-                if (!curS && nxtS && !freedByExit.contains(nxt)) continue;
-
-                if (occupancy.get(nxt) == null) {
-                    occupancy.put(cur, null);
-                    occupancy.put(nxt, n);
-                    locations.put(n, nxt);
-                    newlyFreedByMove.add(cur);
-                    moved++;
-                    changed = true;
-                }
-            }
-            if (!newlyFreedByMove.isEmpty()) {
-                freedByMove.addAll(newlyFreedByMove);
-            }
-        } while (changed);
-
         return moved;
     }
 
     @Override
-    public String getSection(int s) throws IllegalArgumentException {
-        if (!valid.contains(s))
-            throw new IllegalArgumentException("Invalid section");
-        return occupancy.get(s);
+    public String getSection(int trackSection) throws IllegalArgumentException {
+        if (!validSections.contains(trackSection)) {
+            throw new IllegalArgumentException("Track section " + trackSection + " does not exist.");
+        }
+        return sectionOccupancy.get(trackSection);
     }
 
     @Override
-    public int getTrain(String name) throws IllegalArgumentException {
-        if (!trains.containsKey(name))
-            throw new IllegalArgumentException("Train not found");
-        return locations.getOrDefault(name, -1);
+    public int getTrain(String trainName) throws IllegalArgumentException {
+        if (!trains.containsKey(trainName)) {
+            throw new IllegalArgumentException("Train '" + trainName + "' does not exist.");
+        }
+        return trainLocations.getOrDefault(trainName, -1);
     }
 
-    // ===== PATHFINDING =====
+    // ---------- helpers ----------
+
+    private int nextHop(String trainName, int currentSection, List<Integer> path) {
+        int idx = path.indexOf(currentSection);
+        if (idx >= 0 && idx + 1 < path.size()) return path.get(idx + 1);
+        return -1;
+    }
+
     private List<Integer> findPath(int start, int end) {
         Map<Integer, List<Integer>> g = buildGraph();
         if (!g.containsKey(start)) return Collections.emptyList();
         Queue<List<Integer>> q = new LinkedList<>();
         q.add(Collections.singletonList(start));
-        Set<Integer> vis = new HashSet<>();
-        vis.add(start);
-
+        Set<Integer> seen = new HashSet<>();
+        seen.add(start);
         while (!q.isEmpty()) {
             List<Integer> p = q.poll();
             int last = p.get(p.size() - 1);
             if (last == end) return p;
-            for (int nb : g.getOrDefault(last, List.of())) {
-                if (!vis.contains(nb)) {
-                    vis.add(nb);
+            for (int nb : g.getOrDefault(last, Collections.emptyList())) {
+                if (seen.add(nb)) {
                     List<Integer> np = new ArrayList<>(p);
                     np.add(nb);
                     q.add(np);
@@ -245,37 +205,28 @@ public class InterlockingImpl implements Interlocking {
     }
 
     private Map<Integer, List<Integer>> buildGraph() {
-        Map<Integer, List<Integer>> g = new HashMap<>();
-        // passenger route
-        g.computeIfAbsent(1, k -> new ArrayList<>()).add(5);
-        g.computeIfAbsent(5, k -> new ArrayList<>()).addAll(Arrays.asList(1, 2, 6));
-        g.computeIfAbsent(2, k -> new ArrayList<>()).add(5);
-        g.computeIfAbsent(6, k -> new ArrayList<>()).addAll(Arrays.asList(5, 10));
-        g.computeIfAbsent(10, k -> new ArrayList<>()).addAll(Arrays.asList(6, 8, 9));
-        g.computeIfAbsent(8, k -> new ArrayList<>()).add(10);
-        g.computeIfAbsent(9, k -> new ArrayList<>()).add(10);
+        Map<Integer, List<Integer>> graph = new HashMap<>();
+        // Passenger corridor (bi-directional for pathfinding)
+        graph.computeIfAbsent(1, k -> new ArrayList<>()).add(5);
+        graph.computeIfAbsent(5, k -> new ArrayList<>()).addAll(Arrays.asList(1, 2, 6));
+        graph.computeIfAbsent(2, k -> new ArrayList<>()).add(5);
+        graph.computeIfAbsent(6, k -> new ArrayList<>()).addAll(Arrays.asList(5, 10));
+        graph.computeIfAbsent(10, k -> new ArrayList<>()).addAll(Arrays.asList(6, 8, 9));
+        graph.computeIfAbsent(8, k -> new ArrayList<>()).add(10);
+        graph.computeIfAbsent(9, k -> new ArrayList<>()).add(10);
 
-        // freight route
-        g.computeIfAbsent(3, k -> new ArrayList<>()).addAll(Arrays.asList(4, 7));
-        g.computeIfAbsent(4, k -> new ArrayList<>()).add(3);
-        g.computeIfAbsent(7, k -> new ArrayList<>()).addAll(Arrays.asList(3, 11));
-        g.computeIfAbsent(11, k -> new ArrayList<>()).add(7);
-
-        return g;
+        // Freight Y (bi-directional for pathfinding)
+        graph.computeIfAbsent(3, k -> new ArrayList<>()).addAll(Arrays.asList(4, 7));
+        graph.computeIfAbsent(4, k -> new ArrayList<>()).add(3);
+        graph.computeIfAbsent(7, k -> new ArrayList<>()).addAll(Arrays.asList(3, 11));
+        graph.computeIfAbsent(11, k -> new ArrayList<>()).add(7);
+        return graph;
     }
 
-    private int getNext(String name) {
-        if (!locations.containsKey(name)) return -1;
-        Train t = trains.get(name);
-        int cur = locations.get(name);
-        int i = t.path.indexOf(cur);
-        return (i != -1 && i < t.path.size() - 1) ? t.path.get(i + 1) : -1;
-    }
-
-    private boolean isFreight(String name) {
+    private boolean isFreightTrain(String name) {
         Train t = trains.get(name);
         if (t == null || t.path.isEmpty()) return false;
         int first = t.path.get(0);
-        return Arrays.asList(3, 4, 7, 11).contains(first);
+        return first == 3 || first == 4 || first == 7 || first == 11;
     }
 }
